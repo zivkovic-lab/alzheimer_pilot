@@ -1,0 +1,49 @@
+---
+title: "Glycopeptide Feature Boxplot"
+output: 
+    flexdashboard::flex_dashboard:
+        navbar:
+            - { title: "About Alzheimer Study", 
+                href: "http://18.220.28.175/alzheimer/R/index.Rmd", 
+                align: left }
+runtime: shiny 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning =F, error = F, message=F)
+```
+
+```{r, packages}
+pkgs = c('plyr', 'dplyr','stringr','reshape2','tibble', 'plotly', 'DT',
+         'limma','ggthemes','ggplot2','ggthemr')
+for(pkg in pkgs){
+    library(pkg, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE, 
+            character.only=TRUE)
+}
+```
+
+```{r}
+# rm(list=ls())
+# setwd("/Users/chenghaozhu/Box Sync/UC Davis/Right Now/Researches/Zivkovic Lab/Alzheimer_Disease_Study/R/visual")
+load("../Rdata/psz_precalc.Rdata")
+load("../Rdata/glc.Rdata")
+```
+
+```{r}
+rownames(auc) = str_c("P0", 
+                      str_split(rownames(auc), "Alz", n=2, simplify = TRUE)[,2])
+auc = auc[rownames(glycopeptide$pdata),]
+auc = sapply(auc, function(frac) 
+    frac/glycopeptide$pdata$`HDL sample, total protein (ug/uL)`) %>%
+    data.frame
+rownames(auc) = rownames(glycopeptide$pdata)
+```
+
+```{r}
+data = mutate(auc, Group = glycopeptide$pdata$GROUP) %>%
+    melt(id.var = "Group", variable.name = "Fraction", value.name = "AUC")
+ggplot(data, aes(x =  Group, y=AUC)) +
+    geom_boxplot() +
+    geom_point() +
+    facet_grid(.~Fraction)
+```

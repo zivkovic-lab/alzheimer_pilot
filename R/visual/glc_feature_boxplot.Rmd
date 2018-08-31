@@ -1,0 +1,108 @@
+---
+title: "Glycopeptide Feature Boxplot"
+output: 
+    flexdashboard::flex_dashboard:
+        navbar:
+            - { title: "About Alzheimer Study", 
+                href: "http://18.220.28.175/alzheimer/R/index.Rmd", 
+                align: left }
+        orientation: columns
+        vertical_layout: fill
+runtime: shiny 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning =F, error = F, message=F)
+# set common data table options
+```
+
+```{r, packages}
+pkgs = c('plyr', 'dplyr','stringr','reshape2','tibble', 'plotly', 'DT', 'data.table',
+         'limma','ggthemes','ggplot2','ggthemr')
+for(pkg in pkgs){
+    library(pkg, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE, 
+            character.only=TRUE)
+}
+options(DT.options = list())
+```
+
+```{r}
+# rm(list=ls())
+# setwd("/Users/chenghaozhu/Box Sync/UC Davis/Right Now/Researches/Zivkovic Lab/Alzheimer_Disease_Study/R/visual")
+load("../Rdata/glc_precalc.Rdata")
+```
+
+```{r}
+inputPanel(
+    selectInput("level", "Peptides or Glycans? ",
+                choices = names(glycopeptide), selected = "glycans"),
+    selectInput("group", "Select a Comparison: ",
+                choices = names(limma_list[[1]]), selected = "AD   E3/E3")
+)
+```
+
+Column 
+-------------------------------------
+    
+### Boxplot
+
+```{r}
+renderPlotly({
+    edata = glycopeptide[[input$level]]$edata
+    pdata = glycopeptide[[input$level]]$pdata
+    
+    data = data.frame(
+        Group = pdata$GROUP,
+        Sex = pdata$SEX,
+        Age = pdata$AGE,
+        Intensity = as.numeric(edata[feature_selected(),])
+    )
+    g = ggplot(data, aes(x = Group, y = Intensity, Sex=Sex, Age=Age)) +
+        geom_boxplot() +
+        geom_point(size = 3, color = "steelblue") +
+        labs(
+            x = "",
+            y = "Intensity",
+            title = input$feature
+        ) +
+        theme_hc() +
+        theme(
+            axis.text.x = element_text(size=11)
+        )
+    ggplotly(g, tooltip="all")
+})
+```
+
+Column {.tabset}
+-------------------------------------
+
+### stats table
+
+```{r}
+stats_table = reactive({
+    limma_list[[input$level]][[input$group]] %>%
+    rownames_to_column(var = "Feature") %>% 
+    arrange(P.Value)  %>%
+    mutate(
+        logFC = round(logFC, digits = 3),
+        AveExpr = round(AveExpr, digits = 3),
+        t = round(t, digits = 3),
+        P.Value = round(P.Value, digits = 3),
+        adj.P.Val = round(adj.P.Val, digits = 3),
+        B = round(B, digits = 3)
+    ) %>%
+    column_to_rownames(var = "Feature")
+}) 
+
+output$stats_table = renderDataTable(
+    stats_table(), 
+    selection = list(mode = "single", selected = 1),
+    server=T
+    )
+
+feature_selected = reactive({
+    rownames(stats_table())[input$stats_table_rows_selected]
+})
+
+dataTableOutput("stats_table")
+```

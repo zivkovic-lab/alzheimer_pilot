@@ -1,0 +1,162 @@
+---
+title: "Glycopeptide PCA plot"
+output: 
+    flexdashboard::flex_dashboard:
+        navbar:
+            - { title: "About Alzheimer Study", 
+                href: "http://18.220.28.175/alzheimer/R/index.Rmd", 
+                align: left }
+        orientation: column
+runtime: shiny 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning =F, error = F, message=F)
+# set common data table options
+```
+
+```{r, packages}
+pkgs = c('plyr', 'dplyr','stringr','reshape2','tibble', 'plotly', 'DT', 'data.table',
+         'limma','ggthemes','ggplot2','ggthemr', 'heatmaply')
+for(pkg in pkgs){
+    library(pkg, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE, 
+            character.only=TRUE)
+}
+options(DT.options = list(scrollY="100vh"))
+```
+
+```{r}
+# rm(list=ls())
+# setwd("/Users/chenghaozhu/Box Sync/UC Davis/Right Now/Researches/Zivkovic Lab/Alzheimer_Disease_Study/R/visual")
+load("../Rdata/glc_precalc.Rdata")
+```
+
+```{r}
+inputPanel(
+    numericInput("cutoff", "Enter a P-Value Cutoff (0-1): ",
+                 value = 0.1, min=0, max=1, step = 0.05)
+)
+```
+
+```{r}
+edata = glycopeptide$glycans$edata
+pdata = glycopeptide$glycans$pdata
+fdata = glycopeptide$glycans$fdata
+
+getData = function(edata, limma_list, cutoff){
+    features = rownames(edata)[limma_list$`AD   E3/E3`$P.Value <= cutoff | limma_list$`AD   E3/E4`$P.Value<=cutoff]
+    features = features[!is.na(features)]
+
+    edata_sub = as.matrix(edata[features,])
+    edata_sub[is.na(edata_sub)] = 0
+    edata_sub = log2(edata_sub + 1)
+    
+    return(edata_sub)
+}
+
+absolute_scale = function(data){
+    apply(data, 1, function(row){
+        max = max(row)
+        min = min(row)
+        return((row-min)/(max-min)-0.5)
+    }) %>% t
+}
+
+edata_sub = reactive({
+    getData(edata, limma_list$glycans, input$cutoff) %>%
+        absolute_scale()
+})
+
+```
+
+Column
+---------------------------------------
+
+### pca
+
+```{r}
+renderPlotly({
+    pca = prcomp(t(edata_sub()))
+    sd_exp = pca$sdev / sum(pca$sdev)
+    
+    data = data.frame(
+        PC1 = pca$x[,1],
+        PC2 = pca$x[,2],
+        PC3 = pca$x[,3],
+        Group = pdata$GROUP,
+        Subj = rownames(pdata),
+        Sex = pdata$SEX,
+        Age = pdata$AGE
+    )
+    
+    p = ggplot(data = data) +
+        geom_point(aes(x = PC1, y = PC2, colour = Group, Sex = Sex, Age = Age, 
+                       Subj = Subj), 
+                   size = 3) +
+        labs(
+            x = str_c("PC1 (", round(sd_exp[1]*100,1), "%)"),
+            y = str_c("PC2 (", round(sd_exp[2]*100,1), "%)")
+        ) +
+        scale_color_tableau() +
+        theme_bw() 
+    
+    ggplotly(p,toolkip = "all")
+})
+
+```
+
+### Clinical DX
+
+```{r}
+renderNeuropathDx = function(){
+    event_data = event_data(event = "plotly_click")
+    if(is.null(event_data)){
+        cat("Click to See Neuropath DX\n")
+        return()
+    }
+    pointNumber = event_data$pointNumber
+    cat(str_c("Subject ID: ", rownames(pdata)[pointNumber+1], "\n\n"))
+    cat("Neuropath DX:\n")
+    cat(pdata$`NEUROPATH DX`[pointNumber+1])
+    return()
+}
+
+renderPrint({
+    event_data = event_data(event = "plotly_click")
+    # print(event_dat)
+    if(is.null(event_data)){
+        cat("Click at any Point of the PCA plot to See Clinical DX\n")
+    }else{
+        pointNumber = event_data$pointNumber
+        curveNumber = event_data$curveNumber
+        data_id = curveNumber * 5 + pointNumber+1
+        cat(str_c("* Subject ID: ", rownames(pdata)[data_id], "\n\n"))
+        cat("------------------------------------\n")
+        cat("* Clinical DX:\n")
+        cat(pdata$`CLINICAL DX`[data_id])
+        cat("\n\n------------------------------------\n")
+        cat("* Neuropath DX:\n")
+        cat(pdata$`NEUROPATH DX`[data_id])
+    }
+})
+```
+
+Column
+---------------------------------------
+
+###
+
+```{r}
+col_side_colors = data.frame(
+    Group = pdata$GROUP,
+    rownames = rownames(pdata)
+) %>%
+    column_to_rownames("rownames")
+renderPlotly({
+    heatmaply(edata_sub(), 
+              Colv = T, 
+              colors = Spectral, 
+              col_side_colors =col_side_colors)
+})
+```
+
