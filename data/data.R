@@ -4,12 +4,11 @@ for(pkg in pkgs){
     library(pkg, quietly=TRUE, verbose=FALSE, warn.conflicts=FALSE, 
             character.only=TRUE)
 }
+setwd(dirname(parent.frame(2)$ofile))
 ################################################################################
 ##########                     G L Y C O M I C S                      ##########
 ################################################################################
 ## -------------------- edata and fdata ----------------------
-rm(list=ls())
-setwd("~/Box Sync/UC Davis/Right Now/Researches/Zivkovic Lab/Alzheimer_Disease_Study/analysis/data")
 
 file='../data-raw/FFS AD data normalized.xlsx'
 
@@ -97,7 +96,7 @@ pdata = pdata %>%
 ## ----------------- peptide and glycan ----------------------
 
 glc = list(
-    peptide = MultiSet(
+    peptide = MultxSet(
         conc_table = edata[is.na(fdata$`N/O glycan`),] %>% as.matrix %>% conc_table,
         sample_table = sample_table(pdata),
         feature_data = fdata[is.na(fdata$`N/O glycan`),1:2] %>% feature_data,
@@ -127,7 +126,7 @@ fct = read_excel(path = file, sheet = "AD HDL Glycopeptides (2)",
     column_to_rownames("Subject ID")
 fct = fct[sampleNames(glc$peptide),]
 
-fct = MultiSet(
+fct = MultxSet(
     conc_table = fct[,6:8] %>% t %>% conc_table,
     sample_table = fct[,1:5] %>% sample_table,
     experiment_data = MultiExperimentData(experiment_type = "HDL Function")
