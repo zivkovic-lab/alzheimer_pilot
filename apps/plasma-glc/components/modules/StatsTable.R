@@ -13,20 +13,40 @@ StatsTable = R6Class(
         
         # UI
         ui = function(){
-            ns = NS(NS(self$id)(self$parent_id))
+            ns = NS(NS(self$parent_id)(self$id))
             
-            DTOutput("table")
+            DTOutput(ns("table"))
         },
         
         # server
         #' @props table: data.frame with statistics result
+        #' @props sortby: numeric
         server = function(input, output, session, props){
-            observeEvent(props$table, {
-                output$table = renderDT({
-                    datatable(props$table)
-                })
+            emit = reactiveValues(
+                selected = NULL
+            )
+            
+            output$table = renderDT({
+                if(is.null(props$sortby)){
+                    sortby = props$sortby
+                } else {
+                    sortby = 4
+                }
+                datatable(
+                    props$table,
+                    selection = list(mode = "single", selected = 1),
+                    options = list(
+                        order = list(sortby, "asc")
+                    )
+                ) %>%
+                    formatSignif(columns = seq_len(ncol(props$table)), digits = 4)
             })
             
+            observeEvent(input$table_rows_selected, {
+                emit$selected = rownames(props$table)[input$table_rows_selected]
+            })
+            
+            return(emit)
         },
         
         # call

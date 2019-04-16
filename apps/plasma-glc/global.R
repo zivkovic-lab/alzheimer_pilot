@@ -1,5 +1,5 @@
 pkgs = c("dplyr", "reshape2", "stringr","ggplot2", "Metabase", "ggmetaplots",
-         "shiny", "shinydashboard", "R6", "DT", "plotly", "shinyjs")
+         "shiny", "shinydashboard", "R6", "DT", "plotly", "shinyjs", "glue")
 
 for(pkg in pkgs){
     suppressPackageStartupMessages(library(pkg, character.only = T))
@@ -8,3 +8,7 @@ for(pkg in pkgs){
 load("data/data.rda")
 
 import::here(ShinyModule, .from="components/modules/ShinyModule.R")
+
+theme_set(theme_bw())
+
+#glc = transform_by_feature(glc, log2)

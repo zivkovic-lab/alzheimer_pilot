@@ -23,7 +23,18 @@ App = R6Class(
         
         # server
         server = function(input, output, session){
-            self$body$call()
+            sidebarData = self$sidebar$call()
+            
+            observeEvent({
+                sidebarData$current_tab
+                sidebarData$dataset
+            }, {
+                self$body$call(props = reactiveValues(
+                    current_tab = sidebarData$current_tab,
+                    dataset = sidebarData$dataset
+                ))
+            })
+            
             # shinyjs remove btn-default class
             shinyjs::removeClass(selector = ".btn", class = "btn-default")
         }

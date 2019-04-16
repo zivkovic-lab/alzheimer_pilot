@@ -1,1 +1,1 @@
-/usr/local/bin/R -e "shiny::runApp('.',port=3939)"
+/usr/local/bin/R -q -e "shiny::runApp('.',port=3838)"
