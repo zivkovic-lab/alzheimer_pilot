@@ -53,25 +53,29 @@ OverviewPage = R6Class(
                 )
             )
             
+            # variable summary
             output$summary = renderText({
                 out = capture.output(summary(pdata[,input$`pdata-table_columns_selected`]))
                 paste(out, collapse = "\n")
             })
             
+            # histogram/barplot
             output$plot = renderPlotly({
-                selected = pdata[,input$`pdata-table_columns_selected`]
-                if(is.numeric(selected)) {
-                    data.frame(
-                        value = selected
-                    ) %>%
-                        ggplot(aes(x = value)) +
-                        geom_histogram(bins = 25, color = "white", fill = "steelblue") 
-                } else {
-                    data.frame(
-                        value = selected
-                    ) %>%
-                        ggplot(aes(x = value)) +
-                        geom_bar(fill = "steelblue")
+                if(!is.null(input$`pdata-table_columns_selected`)){
+                    selected = pdata[,input$`pdata-table_columns_selected`]
+                    if(is.numeric(selected)) {
+                        data.frame(
+                            value = selected
+                        ) %>%
+                            ggplot(aes(x = value)) +
+                            geom_histogram(bins = 25, color = "white", fill = "steelblue") 
+                    } else {
+                        data.frame(
+                            value = selected
+                        ) %>%
+                            ggplot(aes(x = value)) +
+                            geom_bar(fill = "steelblue")
+                    }   
                 }
             })
         }

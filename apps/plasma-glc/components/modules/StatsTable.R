@@ -27,16 +27,11 @@ StatsTable = R6Class(
             )
             
             output$table = renderDT({
-                if(is.null(props$sortby)){
-                    sortby = props$sortby
-                } else {
-                    sortby = 4
-                }
                 datatable(
                     props$table,
                     selection = list(mode = "single", selected = 1),
                     options = list(
-                        order = list(sortby, "asc")
+                        order = list(props$sortby, "asc")
                     )
                 ) %>%
                     formatSignif(columns = seq_len(ncol(props$table)), digits = 4)

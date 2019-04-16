@@ -80,7 +80,8 @@ LinearModelPage = R6Class(
                         designData$coef
                     )
                     selectedData = self$statsTable$call(props = reactiveValues(
-                        table = states$statsResult
+                        table = states$statsResult,
+                        sortby = 4
                     ))
                     observeEvent(selectedData$selected, {
                         states$selected = selectedData$selected
