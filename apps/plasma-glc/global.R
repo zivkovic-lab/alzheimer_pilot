@@ -1,5 +1,6 @@
 pkgs = c("dplyr", "reshape2", "stringr","ggplot2", "Metabase", "ggmetaplots",
-         "shiny", "shinydashboard", "R6", "DT", "plotly", "shinyjs", "glue")
+         "shiny", "shinydashboard", "R6", "DT", "plotly", "shinyjs", "glue",
+         "tibble")
 
 for(pkg in pkgs){
     suppressPackageStartupMessages(library(pkg, character.only = T))
