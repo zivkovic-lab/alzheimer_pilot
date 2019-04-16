@@ -20,9 +20,11 @@ Click the **Add Variables**, and add the variable(s) that you would like to incl
 
 The variables present in the formula must be confirmed in the previous step. If any special character present in the variable name, quote it using the \` (backquote, on the left top of your keyboard, below the `esc` key). Examples:
 
-~ `Clinical Group`
-~ `Clinical Group` + AGE
-~ `Clinical Group` * AGE + SEX
+~ \`Clinical Group\`
+
+~ \`Clinical Group\` + AGE
+
+~ \`Clinical Group\` * AGE + SEX
 
 Click the **Submit** button to submit the formula.
 
