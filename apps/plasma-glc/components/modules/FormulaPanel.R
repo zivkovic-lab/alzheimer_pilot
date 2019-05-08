@@ -46,9 +46,17 @@ FormulaPanel = R6Class(
                         tags$hr()
                     ),
                     column(
-                        width = 12,
+                        width = 6,
                         uiOutput(ns("coef-ui")),
                         actionButton(ns("coef-submit"), "Submit", class="btn-primary")
+                    ),
+                    column(
+                        width = 6,
+                        selectInput(
+                            ns('transform'), 'Transform method',
+                            choices = c('none', 'log', 'log(x+1)', 'square', 'cubic', 'square root'),
+                            selected = 'log'
+                        )
                     )
                 )
             )
@@ -62,7 +70,8 @@ FormulaPanel = R6Class(
                 varNames = list(),
                 varTypes = list(),
                 varSelect = list(),
-                formula = NULL
+                formula = NULL,
+                submitted = NULL
             )
             # variables to emit to the parent module
             emit = reactiveValues(
@@ -166,6 +175,8 @@ FormulaPanel = R6Class(
             # event listener for coef input
             observeEvent(input$`coef-submit`, {
                 emit$coef = input$coef
+                emit$transform = input$transform
+                emit$submitted = input$`coef-submit`
             })
             
             return(emit)

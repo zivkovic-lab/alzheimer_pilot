@@ -70,13 +70,13 @@ LinearModelPage = R6Class(
             
             observeEvent({
                 props$dataset
-                designData$coef
-                designData$design
+                designData$submitted
             }, {
                 if(!is.null(designData$design) & !is.null(designData$coef)){
                     states$statsResult = self$fit(
                         data[[props$dataset]],
                         designData$design,
+                        designData$transform,
                         designData$coef
                     )
                     selectedData = self$statsTable$call(props = reactiveValues(
@@ -89,7 +89,10 @@ LinearModelPage = R6Class(
                 }
             })
 
-            observeEvent(states$selected, {
+            observeEvent({
+                states$statsResult
+                states$selected
+            }, {
                 if(!is.null(states$selected)) {
                     # call volcanoplot
                     self$volcanoPlotPanel$call(props = reactiveValues(
@@ -114,9 +117,18 @@ LinearModelPage = R6Class(
         #' @param object mSet
         #' @param design design matrix
         #' @param coef character
-        fit = function(object, design, coef){
+        fit = function(object, design, transform, coef){
+            transform = switch(
+                transform,
+                'none' = I,
+                'log' = log,
+                'log(x+1)' = function(x){ log(x+1) },
+                'square' = function(x){ x^2 },
+                'cube' = function(x){ x^3 },
+                'square root' = sqrt
+            )
             mset = subset_samples(object, rownames(design))
-            mSet_limma(mset, design, coef = coef)
+            mSet_limma(mset, design, transform = transform, coef = coef)
         }
     )
 )

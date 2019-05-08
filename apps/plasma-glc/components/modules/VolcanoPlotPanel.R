@@ -31,7 +31,8 @@ VolcanoPlotPanel = R6Class(
                 if(!is.na(props$data)){
                     props$data %>%
                         tibble::rownames_to_column("feature") %>%
-                        ggplot(aes(x = logFC, y = -log(pvalue))) +
+                        ggplot(aes(x = logFC, y = -log(pvalue), pvalue = pvalue))+
+                        geom_hline(yintercept = -log(0.05), linetype='dashed') +
                         geom_point(aes(feature = feature), color = "steelblue",
                                    alpha = 0.6) +
                         geom_point(

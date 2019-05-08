@@ -37,6 +37,7 @@ pdata$`ApoE (2)` = ifelse(
 pdata$`ApoE (2)` = factor(pdata$`ApoE (2)`)
 pdata$apoE = paste(pdata$`ApoE (1)`, pdata$`ApoE (2)`, sep = "-")
 
+
 # -------- istd corrected peptides ---------------------------------------------
 edata = read_excel(file, sheet = 1, na = "ND") %>%
     as.data.frame %>% tibble::column_to_rownames("...1")
