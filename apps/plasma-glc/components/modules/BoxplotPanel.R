@@ -70,7 +70,7 @@ BoxplotPanel = R6Class(
             
             output$plot = renderPlotly({
                 if(!is.null(props$feature) & input$x != "null" ){
-                    object = data[[props$dataset]]
+                    object = props$data
                     if(input$`hide-na`){
                         object = subset_samples(
                             object,
@@ -89,11 +89,6 @@ BoxplotPanel = R6Class(
                     do.call(plot_boxplot, args)
                 }
             })
-        },
-        
-        # call
-        call = function(input, output, session, props){
-            callModule(self$server, self$id, props)
         },
         
         # methods

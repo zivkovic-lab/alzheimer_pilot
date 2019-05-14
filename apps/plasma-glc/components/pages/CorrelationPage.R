@@ -92,12 +92,6 @@ CorrelationPage = R6Class(
                     ))
                 })
             })
-            
-        },
-        
-        # call
-        call = function(input, output, session, props){
-            callModule(self$server, self$id, props)
         }
     )
 )

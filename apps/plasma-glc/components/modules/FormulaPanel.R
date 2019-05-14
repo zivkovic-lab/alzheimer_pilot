@@ -54,8 +54,8 @@ FormulaPanel = R6Class(
                         width = 6,
                         selectInput(
                             ns('transform'), 'Transform method',
-                            choices = c('none', 'log', 'log(x+1)', 'square', 'cubic', 'square root'),
-                            selected = 'log'
+                            choices = transform_choices,
+                            selected = transform_choices[2]
                         )
                     )
                 )

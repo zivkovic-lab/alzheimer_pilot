@@ -15,9 +15,9 @@ Sidebar = R6Class(
                 sidebarMenu(
                     id = "tabs",
                     menuItem("Overview", tabName = "overview"),
-                    #menuItem("Normality", tabName = "normality"),
                     menuItem("Linear Models", tabName = "linear-model"),
-                    menuItem("Correlations", tabName = "correlation")
+                    menuItem("Correlations", tabName = "correlation"),
+                    menuItem('E3-E4 Subset', tabName = 'e3e4-subset')
                 ),
                 tags$br(),
                 tags$hr(),

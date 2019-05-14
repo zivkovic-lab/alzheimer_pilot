@@ -13,3 +13,5 @@ import::here(ShinyModule, .from="components/modules/ShinyModule.R")
 theme_set(theme_bw())
 
 #glc = transform_by_feature(glc, log2)
+
+transform_choices = c('none', 'log', 'log(x+1)', 'square', 'cubic', 'square root')

@@ -19,8 +19,12 @@ ShinyModule = R6Class(
         
         },
         
-        call = function(input, output, session){
-            callModule(self$server, self$id)
+        call = function(input, output, session, props){
+            if(missing(props)){
+                callModule(self$server, self$id)
+            } else {
+                callModule(self$server, self$id, props)   
+            }
         }
     )
 )

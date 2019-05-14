@@ -102,16 +102,11 @@ LinearModelPage = R6Class(
 
                     # call boxplot
                     self$boxplotPanel$call(props = reactiveValues(
-                        dataset = props$dataset,
+                        data = data[[props$dataset]],
                         feature = states$selected
                     ))
                 }
             })
-        },
-        
-        # call
-        call = function(input, output, session, props){
-            callModule(self$server, self$id, props)
         },
         
         #' @param object mSet
