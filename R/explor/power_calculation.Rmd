@@ -1,0 +1,123 @@
+---
+title: "AD plasma glycopeptides power analysis"
+author: "Chenghao Zhu"
+date: "`r strftime(Sys.time(), '%Y-%m-%d')`"
+output:
+    html_document:
+        code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+### Brief background
+
+48 plasma samples from human with 36 AD patients and 12 normal control. Plasma glycopeptides were analysis by the Labrilla lab. For more detail about this dataset, see http://www.chenghaozhu.net/study-docs/alzheimer/
+
+<br>
+
+### Hypothesis testing
+
+* $H_0$: glycopeptide *x* is not different in AD compare to healthy control.
+* $H_a$: glycopeptide *x* is different in AD compare to healthy control.
+
+The sample hypothesis was tested on all 421 glycopeptides using all 48 samples, using a simple t test. The t-statistic value, standard error, and p value of each test was showed. Multiple test correction was not applied. 
+
+<br>
+
+### Sample size calculation
+
+Sample size calculation was performed using the delta of mean of each group (AD and normal), the overall standard deviation, the power, and significant level. The power was set at 0.8, which means 20% type II error is allowed. The significant level was set at 0.95. The power and significant level chosen are all typically used and accepted. The column **n** represent the calculated sample size in <span class="bg-danger">each group</span> in order to acheive a significnat different (P < 0.05) with a 20% type II error allowed. 
+
+The standards deviation for each glycopeptide was assumped to be the same in all subjects (AD vs control). The data was log transformed before calculating the delta of mean, standard deviation, and t test.
+
+<br>
+
+### Interpretation
+
+* With 50 samples in each group, the **null hypotheiss** can be rejected on at least 22 glycopeptides.
+* With 60 samples in each group, the **null hypotheiss** can be rejected on at least 31 glycopeptides.
+* With 70 samples in each group, the **null hypotheiss** can be rejected on at least 44 glycopeptides.
+
+<br>
+
+
+
+```{r}
+# load packages
+pkgs=c("dplyr", "reshape2", "ggplot2", "Metabase", 'DT')
+for(pkg in pkgs){
+    suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+}
+```
+
+```{r}
+# load dataset
+load('../../apps/plasma-glc/data/data.rda')
+glc = data$glycopeptides_adjusted
+glc = transform_by_feature(glc, function(x)
+    ifelse(is.na(x), min(x, na.rm = TRUE) / 2, x)
+)
+```
+
+```{r}
+# perform simple t tests to every variable
+#design = model.matrix(data = as(glc$sample_table, 'data.frame'), ~ `Clinical Group`)
+y = glc$sample_table$`Clinical Group`
+ttests = function(x, y, transform, coef){
+    rn = rownames(x)
+    x = apply(x, 2, transform)
+    res = lapply(seq_len(nrow(x)), function(i){
+        res = t.test(x[i,] ~ y)
+        res = c(res$statistic, res$stderr, res$p.value) 
+        return(res)
+    })
+    res = do.call(rbind, res) %>%
+        as.data.frame %>%
+        `colnames<-`(c("statistic", 'stderr', 'p.value')) %>%
+        `rownames<-`(rn)
+    return(res)
+}
+fit = ttests(glc$conc_table, y, log)
+
+# perform power calculation on each variable
+edata = glc$conc_table %>% log
+df = edata %>% t %>% as.data.frame %>%
+    mutate(clinical_group = glc$sample_table$`Clinical Group`) %>%
+    melt(id.vars = "clinical_group") %>%
+    group_by(clinical_group, variable) %>%
+    summarize(mean = mean(value)) %>%
+    dcast(variable ~ clinical_group, value.var = "mean") %>%
+    mutate(delta = AD - normal) %>%
+    select(-normal, -AD) %>%
+    mutate(sd = apply(edata, 1, sd))
+df = df %>%
+    mutate(n = sapply(seq_len(nrow(df)), function(i){
+        power.t.test(
+            delta = df$delta[i], sd = df$sd[i],
+            sig.level = 0.05, power = 0.8
+        )$n %>% ceiling()
+    })) %>%
+    tibble::column_to_rownames("variable")
+
+# put result together
+cbind(fit, df) %>% 
+    tibble::rownames_to_column("variable") %>%
+    mutate(
+        statistic = round(statistic, 3),
+        stderr = round(stderr, 3),
+        p.value = round(p.value, 3),
+        delta = round(delta, 3),
+        sd = round(sd, 3)
+    ) %>%
+    arrange(n) %>%
+    datatable(
+        extensions = 'Buttons', options = list(
+            dom = 'Bfrtip',
+            buttons = c('copy', 'csv', 'excel')
+        )
+    )
+```

@@ -66,6 +66,30 @@ fdata2 = str_split_fixed(rownames(edata2), "_", n = 3) %>%
     as.data.frame %>% data.table::setnames(c("protein", "position", "composition"))
 rownames(fdata2) = rownames(edata2)
 
+glycans = lapply(as.character(fdata2$composition), function(glycan){
+    if(grepl("/", glycan)){
+        glycan = str_split(glycan, "/")[[1]]
+        glycan = lapply(glycan, function(g){
+            strsplit(g, "")[[1]]
+        })
+        Hex = ifelse(glycan[[1]][1] == glycan[[2]][1], glycan[[1]][1], NA)
+        HexNAc = ifelse(glycan[[1]][2] == glycan[[2]][2], glycan[[1]][2], NA)
+        Fuc = ifelse(glycan[[1]][3] == glycan[[2]][3], glycan[[1]][3], NA)
+        Neu5Ac = ifelse(glycan[[1]][4] == glycan[[2]][4], glycan[[1]][4], NA)
+    }else{
+        glycan = strsplit(glycan, "")[[1]]
+        Hex = glycan[1]
+        HexNAc = glycan[2]
+        Fuc = glycan[3]
+        Neu5Ac = glycan[4]
+    }
+    res = as.integer(c(Hex, HexNAc, Fuc, Neu5Ac))
+    names(res) = c("Hex", "HexNAc", "Fuc", "Neu5Ac")
+    return(res)
+})
+glycans = do.call(rbind, glycans)
+fdata2 = cbind(fdata2, glycans)
+
 glc1 = ProteomicsSet(
     conc_table = conc_table(as.matrix(edata2)),
     sample_table = sample_table(pdata),
@@ -86,6 +110,30 @@ fdata = str_split_fixed(rownames(edata), "\\_", n=3) %>%
     as.data.frame %>%
     data.table::setnames(c("protein", "position", "composition"))
 rownames(fdata) = rownames(edata)
+
+glycans = lapply(as.character(fdata$composition), function(glycan){
+    if(grepl("/", glycan)){
+        glycan = str_split(glycan, "/")[[1]]
+        glycan = lapply(glycan, function(g){
+            strsplit(g, "")[[1]]
+        })
+        Hex = ifelse(glycan[[1]][1] == glycan[[2]][1], glycan[[1]][1], NA)
+        HexNAc = ifelse(glycan[[1]][2] == glycan[[2]][2], glycan[[1]][2], NA)
+        Fuc = ifelse(glycan[[1]][3] == glycan[[2]][3], glycan[[1]][3], NA)
+        Neu5Ac = ifelse(glycan[[1]][4] == glycan[[2]][4], glycan[[1]][4], NA)
+    }else{
+        glycan = strsplit(glycan, "")[[1]]
+        Hex = glycan[1]
+        HexNAc = glycan[2]
+        Fuc = glycan[3]
+        Neu5Ac = glycan[4]
+    }
+    res = as.integer(c(Hex, HexNAc, Fuc, Neu5Ac))
+    names(res) = c("Hex", "HexNAc", "Fuc", "Neu5Ac")
+    return(res)
+})
+glycans = do.call(rbind, glycans)
+fdata = cbind(fdata, glycans)
 
 # construct the GlycomicsSet object
 glc2 = GlycomicsSet(
