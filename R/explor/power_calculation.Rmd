@@ -30,7 +30,7 @@ The sample hypothesis was tested on all 421 glycopeptides using all 48 samples, 
 
 ### Sample size calculation
 
-Sample size calculation was performed using the delta of mean of each group (AD and normal), the overall standard deviation, the power, and significant level. The power was set at 0.8, which means 20% type II error is allowed. The significant level was set at 0.95. The power and significant level chosen are all typically used and accepted. The column **n** represent the calculated sample size in <span class="bg-danger">each group</span> in order to acheive a significnat different (P < 0.05) with a 20% type II error allowed. 
+Sample size calculation was performed using the delta of mean of each group (AD and normal), the overall standard deviation, the power, and significant level. The power was set at 0.8, which means 20% type II error is allowed. The significant level was set at 0.95. The power and significant level chosen are all typically used and accepted. The column **n** represent the calculated sample size in <span class="bg-danger">each group</span> in order to acheive a significnat different (P < 0.05, unadjusted) with a 20% type II error allowed. 
 
 The standards deviation for each glycopeptide was assumped to be the same in all subjects (AD vs control). The data was log transformed before calculating the delta of mean, standard deviation, and t test.
 
@@ -63,7 +63,7 @@ glc = transform_by_feature(glc, function(x)
 )
 ```
 
-```{r}
+```{r, tidy=TRUE}
 # perform simple t tests to every variable
 #design = model.matrix(data = as(glc$sample_table, 'data.frame'), ~ `Clinical Group`)
 y = glc$sample_table$`Clinical Group`
@@ -98,7 +98,7 @@ df = df %>%
     mutate(n = sapply(seq_len(nrow(df)), function(i){
         power.t.test(
             delta = df$delta[i], sd = df$sd[i],
-            sig.level = 0.05, power = 0.8
+            sig.level = 0.00227, power = 0.8
         )$n %>% ceiling()
     })) %>%
     tibble::column_to_rownames("variable")

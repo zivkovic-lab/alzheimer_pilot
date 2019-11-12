@@ -1,0 +1,323 @@
+---
+title: "Brain Region Glycomics"
+author: "Chenghao Zhu"
+date: "`r strftime(Sys.time(), format = '%Y-%m-%d')`"
+output: 
+    html_document:
+        code_folding: show
+runtime: shiny
+---
+
+<style type="text/css">
+code {
+  font-family: monaco;
+}
+body p{
+    font-size: 12pt
+}
+body li {
+    font: 12pt
+}
+.datatables{
+    overflow: auto;
+    white-space: nowrap;
+}
+</style>
+
+<hr>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%")
+```
+
+
+```{r}
+pkgs=c(
+    "dplyr", "reshape2", "tibble", "ggplot2", "tidyr", "limma", "edgeR", 
+    "Metabase", "plotly", "shiny", "DT"
+)
+for(pkg in pkgs){
+    suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+}
+```
+
+
+```{r}
+# loading data
+load("../../data/brian.rda")
+# set default ggplot theme
+theme_set(theme_bw())
+```
+
+<hr>
+
+## 1. Zeros/missing values
+
+The dataset contains quite a few zeros. Below is a histogram of the number of zeros observed in every glycan feature. For example, there are 34 glycans that have 37 zeros, in other words, that only observed in one sample. You can see it by hovering your cursor over last bar. 
+
+```{r}
+(data.frame(
+    feature = featureNames(data$abs_abund),
+    abs_abund = apply(data$abs_abund$conc_table, 1, function(row){sum(row == 0)}),
+    rel_abund = apply(data$rel_abund$conc_table, 1, function(row){sum(row == 0)})
+) %>% 
+    melt(id.var = "feature") %>%
+    ggplot() + 
+    geom_histogram(aes(x = value), color = "white", bins = 25, fill = "steelblue") +
+    facet_grid(~variable) +
+    labs(x = "number of zeros")) %>%
+    ggplotly()
+```
+
+So the data seem to be zero-inflated. But all the glycans were kept in the analysis for now, but we have to keep in mind that a lot of glycans have many zeros. Also, a pior of 1 is added to all the values in order to allow the statistic models to work. Adding a pior to all the values does not change the relativity betwee groups.
+
+<hr>
+
+## 2. Normality
+
+Each glycan was first z-score scaled so the mean equals to 0, and the standard deviation equals to 1 (i.e., $N(0,1)$). The median of each glycan was then plotted in the histogram below for absolute and relative abundance separately. The scaled median is a indicator of the normality of a varibale. If a variable is normal distrubited, its scaled median should be very closed to zero. 
+
+
+```{r}
+(data.frame(
+    glycan = featureNames(data$abs_abund),
+    abs_abund = apply(data$abs_abund$conc_table, 1, function(x) median(scale(x))),
+    rel_abund = apply(data$rel_abund$conc_table, 1, function(x) median(scale(x)))
+) %>% 
+    melt(id.vars = "glycan") %>%
+    ggplot(aes(x = value, y = ..density..)) +
+    geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+    geom_density() +
+    facet_grid(~variable)) %>%
+    ggplotly
+```
+
+The data seem to be skewed towards left, because the scaled median of all glycans are negative. This is some how expected because we just found that there are many zeros. Simply log transforming makes it a little better.
+
+```{r}
+(data.frame(
+    glycan = featureNames(data$abs_abund),
+    abs_abund = apply(data$abs_abund$conc_table, 1, function(x) median(scale(log(x)))),
+    rel_abund = apply(data$rel_abund$conc_table, 1, function(x) median(scale(log(x))))
+) %>% 
+    melt(id.vars = "glycan") %>%
+    ggplot(aes(x = value, y = ..density..)) +
+    geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+    geom_density() +
+    facet_grid(~variable)) %>%
+    ggplotly
+```
+
+<hr>
+
+## 3. Principle component analysis (PCA)
+
+Principle component analysis was don with the prior added, log transformed, and z-score transfomed data. Below is the scatterplot of the first two principle components (PC1 and PC2). Each point in the scatter plots represent a sample. We didn't see a clear separation between AD and non-AD, however, the *Lateral Cerebellar Cortex* and *Pons* are far away from the rest samples.
+
+```{r}
+abs = data$abs_abund
+abs$conc_table = abs$conc_table + 1
+rel = data$rel_abund
+rel$conc_table = rel$conc_table + 1
+pca1 = abs %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+pca2 = rel %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+df = data.frame(pca1$x[,1:2], pca2$x[,1:2]) %>%
+    `colnames<-`(c(
+        paste0("abs_abund-", c("PC1", "PC2")),
+        paste0("rel_abund-", c("PC1", "PC2"))
+    )) %>%
+    mutate(
+        region = abs$sample_table$region,
+        sample = sampleNames(abs),
+        group = abs$sample_table$group
+    ) %>%
+    melt(id.vars = c("sample", "region", "group")) %>%
+    separate(variable, into = c("data type", "PC"), sep = "-") %>%
+    dcast(sample + region + `data type` + group ~ PC)
+```
+
+```{r}
+(ggplot(df) +
+    geom_point(aes(x = PC1, y = PC2, color = group)) +
+    facet_wrap(~`data type`, scales = "free")) %>%
+    ggplotly
+```
+
+```{r}
+(ggplot(df) +
+    geom_point(aes(x = PC1, y = PC2, color = region)) +
+    facet_wrap(~`data type`, scales = "free")) %>%
+    ggplotly
+```
+
+
+## 4. Linear model
+
+The [limma](https://bioconductor.org/packages/release/bioc/html/limma.html) ([Ritchie et al. 2015](https://academic.oup.com/nar/article/43/7/e47/2414268)) package was used to perform statistical analysis. The voom ([Law et al. 2014](https://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-2-r29)) method was used to further normalize the data prior to analysis. The `contrasts.fit` function was used to compare between AD to control in each brain region.
+
+```{r}
+pdata = as(abs$sample_table, "data.frame")
+pdata$region = gsub(" ", "_", pdata$region)
+pdata$group = gsub("-", "_", pdata$group)
+pdata$interaction = interaction(pdata$region, pdata$group)
+design = model.matrix(~ interaction + 0, data = pdata)
+contrasts = paste0("interaction", unique(pdata$region), ".AD - interaction", unique(pdata$region), ".Non_AD")
+
+lm = lapply(data, function(mset){
+    d0 = DGEList(mset$conc_table)
+    d0 = calcNormFactors(d0)
+    #d0 = d0[apply(d0, 1, function(x) sum(x == 1) < 10),]
+    edata = voom(d0, design)
+    fit = lmFit(edata, design)
+    
+    tt = lapply(contrasts, function(contr){
+        contrast = makeContrasts(contrasts = contr, levels = colnames(coef(fit)))
+        res = contrasts.fit(fit, contrast)
+        res = eBayes(res)
+        topTable(res, number = Inf, sort.by = "none")
+    })
+    names(tt) = unique(pdata$region)
+    return(tt)
+})
+names(lm) = names(data)
+```
+
+
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("data-type", label = "Data Type", choices = names(data))
+    ),
+    tags$div(
+        class="col-sm-6",
+        selectInput("region", label = "Brain Region", choices = unique(pdata$region))
+    )
+)
+```
+
+```{r, echo = FALSE}
+renderDataTable({
+    datatable(
+        cbind(abs$feature_data, lm[[input$`data-type`]][[input$region]]),
+        options = list(order = list(11, "asc"))
+    ) %>%
+        formatSignif(
+            columns = c("logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"),
+            digits = 4
+        ) 
+})
+```
+
+
+
+```{r, echo = FALSE}
+downloadLink("downloadData", "Download Excel", class="btn btn-info btn-xs")
+output$downloadData = downloadHandler(
+    '11_brian_regions_lm_results.xlsx',
+    content = function(file) {
+        file.copy('11_brian_regions_lm_results.xlsx', file)
+    },
+    contentType = "application/zip"
+)
+```
+
+
+<a class="btn btn-danger btn-xs" role="button" data-toggle="collapse" href="#excel" aria-expanded="false" aria-controls="excel" style="float: right;">
+export to excel
+</a>
+<div class="collapse" id="excel">
+```{r, eval = F}
+Sys.setenv(JAVA_HOME='/Library/Java/JavaVirtualMachines/jdk-11.0.1.jdk/Contents/Home')
+library(xlsx)
+wb = createWorkbook(type='xlsx')
+style_header = CellStyle(wb) + Font(wb, isBold = TRUE)
+border = function(position){
+    return(Border(color = "black", position = position, pen = "BORDER_THIN"))
+}
+for(type in names(lm)){
+    sheet = createSheet(wb, sheetName = type)
+    setColumnWidth(sheet, colIndex = 1, colWidth = 20)
+    title_row = createRow(sheet, 1)
+    for(i in seq_along(lm[[type]])){
+        colIndex = (i - 1) * 6 + 2
+        cell = createCell(title_row, colIndex)
+        addMergedRegion(sheet, 1,1,colIndex, colIndex + 5)
+        setCellValue(cell[[1]], names(lm[[type]])[i])
+        addDataFrame(lm[[type]][[i]], sheet, startRow = 2,
+                     startColumn = colIndex - (i == 1), row.names = i == 1)
+    }
+    
+    rows = getRows(sheet)
+    cells = getCells(rows)
+    nrow = nrow(lm[[type]]$Frontal_Cortex) + 1
+    ncol = 6 * length(lm[[type]]) + 1
+    
+    for(k in seq_along(cells)){
+        style = CellStyle(wb)
+        if(k <= length(lm[[type]])){
+            style = style_header + border(c("TOP", "BOTTOM", "RIGHT", "LEFT"))
+        } else {
+            i = as.integer((k - length(lm[[type]]) - 1) / ncol) + 1
+            #j = (k - length(lm[[type]])) %% ncol
+            j = (k - length(lm[[type]])) - (i - 1) * ncol
+            if(i == 1){
+                if(j == 1){
+                    style = style_header + border(c("TOP", "BOTTOM", "RIGHT", "LEFT"))
+                } else if(j %% 6 == 1) {
+                    style = style_header + border(c("TOP", "BOTTOM", "RIGHT"))
+                } else{
+                    style = style_header + border(c("TOP", "BOTTOM"))
+                }
+            } else if (i != nrow) {
+                if(j == 1){
+                    style = style_header + border(c("RIGHT", "LEFT"))
+                } else if(j %% 6 == 1) {
+                    style = style_header + border("RIGHT")
+                } else {
+                    next
+                }
+            } else {
+                if(j == 1){
+                    style = style_header + border(c("BOTTOM", "RIGHT", "LEFT"))
+                } else if(j %% 6 == 1) {
+                    style = style + border(c("BOTTOM", "RIGHT"))
+                } else {
+                    style = style + border("BOTTOM")
+                }
+            }
+        }
+        setCellStyle(cells[[k]], style)
+    }
+}
+saveWorkbook(wb, '11_brian_regions_lm_results.xlsx')
+```
+</div>
+
+```{r echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        renderPlotly({
+            lm[[input$`data-type`]][[input$region]] %>%
+                ggplot() + 
+                geom_point(aes(x = logFC, y = -log(P.Value)), color = "grey10", alpha = 0.6) +
+                geom_hline(yintercept = -log(0.05), color = "red", linetype = "dashed")
+        })
+    ),
+    tags$div(
+        class="col-sm-6",
+        renderPlotly({
+            lm[[input$`data-type`]][[input$region]] %>%
+                ggplot() +
+                geom_histogram(aes(x = P.Value), bins = 40, color = "white", fill = "grey25") +
+                geom_vline(xintercept = 0.05, color = "red", linetype = "dashed")
+        })
+    )
+)
+
+```
+
+Limma is able to detect many glycans being significant different between AD and control in different brain region, however, due to the small sample size and the fact that many glycans were not observed in many samples, a lot of the significance may not be true. The p-value histogram is a useful way to see the distribution of p values. According to the histogram, most regions are not very convicing, except posterior hippocampus. 
