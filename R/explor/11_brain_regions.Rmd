@@ -5,6 +5,8 @@ date: "`r strftime(Sys.time(), format = '%Y-%m-%d')`"
 output: 
     html_document:
         code_folding: show
+        toc: true
+        toc_float: true
 runtime: shiny
 ---
 
@@ -44,7 +46,7 @@ for(pkg in pkgs){
 
 ```{r}
 # loading data
-load("../../data/brian.rda")
+load("../../data/brain.rda")
 # set default ggplot theme
 theme_set(theme_bw())
 ```
@@ -215,9 +217,9 @@ renderDataTable({
 ```{r, echo = FALSE}
 downloadLink("downloadData", "Download Excel", class="btn btn-info btn-xs")
 output$downloadData = downloadHandler(
-    '11_brian_regions_lm_results.xlsx',
+    '11_brain_regions_lm_results.xlsx',
     content = function(file) {
-        file.copy('11_brian_regions_lm_results.xlsx', file)
+        file.copy('11_brain_regions_lm_results.xlsx', file)
     },
     contentType = "application/zip"
 )
@@ -291,7 +293,7 @@ for(type in names(lm)){
         setCellStyle(cells[[k]], style)
     }
 }
-saveWorkbook(wb, '11_brian_regions_lm_results.xlsx')
+saveWorkbook(wb, '11_brain_regions_lm_results.xlsx')
 ```
 </div>
 
@@ -321,3 +323,9 @@ tags$div(
 ```
 
 Limma is able to detect many glycans being significant different between AD and control in different brain region, however, due to the small sample size and the fact that many glycans were not observed in many samples, a lot of the significance may not be true. The p-value histogram is a useful way to see the distribution of p values. According to the histogram, most regions are not very convicing, except posterior hippocampus. 
+
+
+```{r}
+sessionInfo()
+```
+

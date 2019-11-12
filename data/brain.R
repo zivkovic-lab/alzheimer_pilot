@@ -57,4 +57,4 @@ data = list(
     abs_abund = abs_abund,
     rel_abund = rel_abund
 )
-save(data, file = "brian.rda")
+save(data, file = "brain.rda")
