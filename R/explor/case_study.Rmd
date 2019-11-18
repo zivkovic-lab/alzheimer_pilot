@@ -1,0 +1,358 @@
+---
+title: "Case Study Brain Regions"
+author: "Chenghao Zhu"
+date: "`r strftime(Sys.time(), format = '%Y-%m-%d')`"
+output: 
+    html_document:
+        code_folding: show
+        toc: true
+        toc_float: true
+runtime: shiny
+---
+
+<style type="text/css">
+code {
+  font-family: monaco;
+}
+body p{
+    font-size: 12pt
+}
+body li {
+    font: 12pt
+}
+.datatables{
+    overflow: auto;
+    white-space: nowrap;
+}
+</style>
+
+<hr>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+pkgs=c("dplyr", "reshape2", "tibble", "tidyr", "Metabase", "ggplot2", "plotly", "DT",
+       "limma", "edgeR", "shiny")
+for(pkg in pkgs){
+    suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+}
+```
+
+
+```{r}
+# loading data
+abs_abund = readRDS("../../data/case_study.rds")
+# set default ggplot theme
+theme_set(theme_bw())
+# set stringsAsFactors as FALSE by default
+options(stringsAsFactors = FALSE)
+```
+
+<hr>
+
+## 1. Data clarification
+
+The excel sheet received `CaseStudy_AD_20191116_R&A.xlsx` has three sheets named `MTC_AbsAbund`, `LPFc_AbsAbund`, and `LPbC_AbsAbund`, that each has the data for each of the three brain regions analyzed. It seems that different glycans were monitored in the three brain regions, so the rows of the three sheets do not match. The `LPFc_AbsAbund` sheet has 240 rows, the `MTC_AbsAbund` has 258 rows, and the `LPbC_AbsAbund` has 265 rows. I read all three sheets in, and merged them using the `Glycan` column. The merged dataset has 293 glycans (rows). The glycans not observed in a region but present in another region are set to zero.
+
+## 2. Zeros/missing values
+
+This datasets also contains some zeros/missing values. So again I added a prior of 1 to every value just for the purpose of letting the statistic analysis to preceed.
+
+```{r, out.width="100%"}
+(data.frame(
+    feature = featureNames(abs_abund),
+    abs_abund = apply(abs_abund$conc_table, 1, function(row){sum(row == 0)})
+) %>% 
+    ggplot() + 
+    geom_histogram(aes(x = abs_abund), color = "white", bins = 25, fill = "steelblue") +
+    labs(x = "number of zeros")) %>%
+    ggplotly
+```
+
+Here I transformed the absolute abundance data into relative abundance. A pior of 1 is added before the transforming.
+
+```{r}
+abs_abund1 = transform_by_feature(abs_abund, function(x) x + 1)
+rel_abund = transform_by_sample(abs_abund1, function(x) x/sum(x) * 100)
+```
+
+
+## 3. Normality
+
+As shown below in the histogram of the z-scroe scaled median of each glycan, that it skews to the left, due to the zeros.
+
+```{r, out.width="100%"}
+(data.frame(
+    glycan = featureNames(abs_abund),
+    abs_abund = apply(abs_abund$conc_table, 1, function(x) median(scale(x )))
+) %>% 
+    ggplot(aes(x = abs_abund, y = ..density..)) +
+    geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+    geom_density()) %>%
+    ggplotly
+```
+
+Again, taking a log transformation makes it look better.
+
+```{r, out.width="100%"}
+(data.frame(
+    glycan = featureNames(abs_abund),
+    abs_abund = apply(abs_abund$conc_table, 1, function(x) median(scale(log(x + 1))))
+) %>% 
+    ggplot(aes(x = abs_abund, y = ..density..)) +
+    geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+    geom_density()) %>%
+    ggplotly
+```
+
+
+<hr>
+
+## 4. Princicple component analysis
+
+```{r}
+pca1 = abs_abund1 %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+pca2 = rel_abund  %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+df = data.frame(pca1$x[,1:2], pca2$x[,1:2]) %>%
+    `colnames<-`(c(
+        paste0("abs_abund-", c("PC1", "PC2")),
+        paste0("rel_abund-", c("PC1", "PC2"))
+    )) %>%
+    mutate(
+        region = abs_abund$sample_table$region,
+        sample = sampleNames(abs_abund),
+        group = abs_abund$sample_table$group
+    ) %>%
+    melt(id.vars = c("sample", "region", "group")) %>%
+    separate(variable, into = c("data type", "PC"), sep = "-") %>%
+    dcast(sample + region + `data type` + group ~ PC)
+```
+
+```{r, out.width="100%"}
+(ggplot(df) +
+    geom_point(aes(x = PC1, y = PC2, color = group)) +
+    facet_wrap(~`data type`, scales = "free")) %>%
+    ggplotly
+```
+
+```{r, out.width="100%"}
+(ggplot(df) +
+    geom_point(aes(x = PC1, y = PC2, color = region)) +
+    facet_wrap(~`data type`, scales = "free")) %>%
+    ggplotly
+```
+
+```{r, eval = FALSE, include = FALSE, echo = FALSE}
+subset_pca = function(mset, region){
+    mset = subset_samples(mset, mset$sample_table$region == region)
+    mset = subset_features(mset, apply(mset$conc_table, 1, function(x) sum(x > 1) > 0))
+    pca = mset %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+    p = pca$x[,1:2] %>% as.data.frame %>% 
+        mutate(group = mset$sample_table$group) %>%
+        ggplot(aes(PC1, PC2, color = group)) +
+        geom_point()
+    ggplotly(p)
+}
+subset_pca(rel_abund, "MTC")
+```
+
+## 5. Linear Model
+
+```{r}
+pdata = as(abs_abund$sample_table, "data.frame")
+pdata$interaction = interaction(pdata$region, pdata$group)
+design = model.matrix(~ interaction + 0, data = pdata)
+contrasts = paste0("interaction", unique(pdata$region), ".AD - interaction", unique(pdata$region), ".Control")
+
+lm = lapply(list(abs_abund, rel_abund), function(mset){
+    d0 = DGEList(mset$conc_table)
+    d0 = calcNormFactors(d0)
+    #d0 = d0[apply(d0, 1, function(x) sum(x == 1) < 10),]
+    edata = voom(d0, design)
+    fit = lmFit(edata, design)
+    
+    tt = lapply(contrasts, function(contr){
+        contrast = makeContrasts(contrasts = contr, levels = colnames(coef(fit)))
+        res = contrasts.fit(fit, contrast)
+        res = eBayes(res)
+        topTable(res, number = Inf, sort.by = "none")
+    })
+    names(tt) = unique(pdata$region)
+    return(tt)
+})
+names(lm) = c("abs_abund", "rel_abund")
+```
+
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("data-type", label = "Data Type", choices = names(lm))
+    ),
+    tags$div(
+        class="col-sm-6",
+        selectInput("region", label = "Brain Region", choices = unique(pdata$region))
+    )
+)
+```
+
+```{r, echo = FALSE}
+dataTableOutput("dt")
+output$dt = renderDataTable({
+    datatable(
+        cbind(abs_abund$feature_data, lm[[input$`data-type`]][[input$region]]),
+        options = list(order = list(11, "asc")),
+        selection = list(mode = "single", selected = 1)
+    ) %>%
+        formatSignif(
+            columns = c("logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"),
+            digits = 4
+        ) 
+})
+```
+
+```{r, echo = FALSE}
+downloadLink("downloadData", "Download Excel", class="btn btn-info btn-xs")
+output$downloadData = downloadHandler(
+    '11_brain_regions_lm_results.xlsx',
+    content = function(file) {
+        file.copy('case_study_lm_results.xlsx', file)
+    },
+    contentType = "application/zip"
+)
+```
+
+<a class="btn btn-danger btn-xs" role="button" data-toggle="collapse" href="#excel" aria-expanded="false" aria-controls="excel" style="float: right;">
+export to excel
+</a>
+<div class="collapse" id="excel">
+```{r, eval = F}
+Sys.setenv(JAVA_HOME='/Library/Java/JavaVirtualMachines/jdk-11.0.1.jdk/Contents/Home')
+library(xlsx)
+wb = createWorkbook(type='xlsx')
+style_header = CellStyle(wb) + Font(wb, isBold = TRUE)
+border = function(position){
+    return(Border(color = "black", position = position, pen = "BORDER_THIN"))
+}
+for(type in names(lm)){
+    sheet = createSheet(wb, sheetName = type)
+    setColumnWidth(sheet, colIndex = 1, colWidth = 20)
+    title_row = createRow(sheet, 1)
+    for(i in seq_along(lm[[type]])){
+        colIndex = (i - 1) * 6 + 2
+        cell = createCell(title_row, colIndex)
+        addMergedRegion(sheet, 1,1,colIndex, colIndex + 5)
+        setCellValue(cell[[1]], names(lm[[type]])[i])
+        addDataFrame(lm[[type]][[i]], sheet, startRow = 2,
+                     startColumn = colIndex - (i == 1), row.names = i == 1)
+    }
+    
+    rows = getRows(sheet)
+    cells = getCells(rows)
+    nrow = nrow(lm[[type]]$MTC) + 1
+    ncol = 6 * length(lm[[type]]) + 1
+    
+    for(k in seq_along(cells)){
+        style = CellStyle(wb)
+        if(k <= length(lm[[type]])){
+            style = style_header + border(c("TOP", "BOTTOM", "RIGHT", "LEFT"))
+        } else {
+            i = as.integer((k - length(lm[[type]]) - 1) / ncol) + 1
+            #j = (k - length(lm[[type]])) %% ncol
+            j = (k - length(lm[[type]])) - (i - 1) * ncol
+            if(i == 1){
+                if(j == 1){
+                    style = style_header + border(c("TOP", "BOTTOM", "RIGHT", "LEFT"))
+                } else if(j %% 6 == 1) {
+                    style = style_header + border(c("TOP", "BOTTOM", "RIGHT"))
+                } else{
+                    style = style_header + border(c("TOP", "BOTTOM"))
+                }
+            } else if (i != nrow) {
+                if(j == 1){
+                    style = style_header + border(c("RIGHT", "LEFT"))
+                } else if(j %% 6 == 1) {
+                    style = style_header + border("RIGHT")
+                } else {
+                    next
+                }
+            } else {
+                if(j == 1){
+                    style = style_header + border(c("BOTTOM", "RIGHT", "LEFT"))
+                } else if(j %% 6 == 1) {
+                    style = style + border(c("BOTTOM", "RIGHT"))
+                } else {
+                    style = style + border("BOTTOM")
+                }
+            }
+        }
+        setCellStyle(cells[[k]], style)
+    }
+}
+saveWorkbook(wb, 'case_study_lm_results.xlsx')
+```
+</div>
+
+## 6. Visualization {.tabset}
+
+<div class="alert alert-info">Click on the tabs to see differet plots. The glycan in the boxplox is linked to the table above. Click on the row to see the effect.</div>
+
+### Volcano plot
+
+```{r echo = FALSE}
+renderPlotly({
+    lm[[input$`data-type`]][[input$region]] %>%
+        ggplot() + 
+        geom_point(aes(x = logFC, y = -log(P.Value)), color = "grey10", alpha = 0.6) +
+        geom_hline(yintercept = -log(0.05), color = "red", linetype = "dashed")
+})
+```
+
+### Histogram
+
+```{r echo = FALSE}
+renderPlotly({
+    lm[[input$`data-type`]][[input$region]] %>%
+        ggplot() +
+        geom_histogram(aes(x = P.Value), bins = 40, color = "white", fill = "grey25") +
+        geom_vline(xintercept = 0.05, color = "red", linetype = "dashed")
+})
+```
+
+### Box plot
+
+```{r echo = FALSE}
+renderPlotly({
+    if(input$`data-type` == "abs_abund"){
+        mset = abs_abund1
+    } else {
+        mset = rel_abund
+    }
+    title = featureNames(mset)[input$dt_rows_selected]
+    data.frame(
+        value = mset$conc_table[input$dt_rows_selected,],
+        group = mset$sample_table$group,
+        region = mset$sample_table$region
+    ) %>%
+        filter(region == input$region) %>%
+        ggplot(aes(group, value)) +
+        geom_boxplot(aes(fill = group)) +
+        geom_point(shape = 21, fill = "grey", color = "black", size = 2) +
+        labs(title = title, x = "", y = "")
+})
+```
+
+
+## 6. Conclustion
+
+There doesn't seem to be a majore separation between either patient groups or brain regions according to the PCA plot. However, the linear regression result showed that, the relative abundance of 190 glycans in MTC were significantly different in patient groups, most of them are higher in the AD patiens.
+
+
+## 7. Session Information
+
+```{r}
+sessionInfo()
+```
