@@ -102,7 +102,7 @@ DataModel = R6Class(
                              position = position_dodge(0.9), width = 0.3) +
                 scale_fill_lancet() +
                 scale_x_discrete(breaks = glycans, labels = gsub(" [0-9]+$", "", glycans)) +
-                labs(x = "glycan", y = "brian region") +
+                labs(x = "glycan", y = "brain region") +
                 facet_grid(
                     rows = vars(region), 
                     labeller = labeller(region = function(x) gsub(" [0-9]+$", "", x))
