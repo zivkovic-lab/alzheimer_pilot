@@ -57,4 +57,27 @@ data = list(
     abs_abund = abs_abund,
     rel_abund = rel_abund
 )
+
+for(name in names(data)){
+    subtypes = gsub("^(.+)_[0-9]+$", "\\1", Metabase::featureNames(data[[name]]))
+    subtype_map = c(
+        "C"     = "undecorated",
+        "CH"    = "undecorated",
+        "H"     = "undecorated",
+        "HM"    = "high_mannose",
+        "HM-F"  = "high_mannose",
+        "C-S"   = "sialylated",
+        "CH-S"  = "sialylated",
+        "H-S"   = "sialylated",
+        "C-F"   = "fucosylated",
+        "CH-F"  = "fucosylated",
+        "H-F"   = "fucosylated",
+        "C-FS"  = "sialofucosylated",
+        "CH-FS" = "sialofucosylated",
+        "H-FS"  = "sialofucosylated",
+        "H-FS"  = "sialofucosylated"
+    )
+    data[[name]]$feature_data$subtype = subtype_map[subtypes]
+}
+
 save(data, file = "brain.rda")

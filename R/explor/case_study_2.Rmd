@@ -1,0 +1,50 @@
+---
+title: "case-study II"
+author: "Chenghao Zhu"
+date: "`r strftime(Sys.time(), format = '%Y-%m-%d')`"
+output: 
+    html_document:
+        code_folding: show
+        toc: true
+        toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+<style type="text/css">
+code {
+  font-family: monaco;
+}
+body p{
+    font-size: 12pt
+}
+body li {
+    font: 12pt
+}
+.datatables{
+    overflow: auto;
+    white-space: nowrap;
+}
+</style>
+
+<hr>
+
+```{r}
+pkgs=c("dplyr", "reshape2", "ggplot2", "tibble", "Metabase", "readxl")
+for(pkg in pkgs){
+    suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+}
+```
+
+## 1. Import data
+
+```{r}
+files = file.path("../raw_d")
+data = lapply(files, function(file) {
+    lapply(excel_sheets(file))
+})
+```
+
