@@ -58,26 +58,76 @@ data = list(
     rel_abund = rel_abund
 )
 
-for(name in names(data)){
-    subtypes = gsub("^(.+)_[0-9]+$", "\\1", Metabase::featureNames(data[[name]]))
-    subtype_map = c(
-        "C"     = "undecorated",
-        "CH"    = "undecorated",
-        "H"     = "undecorated",
-        "HM"    = "high_mannose",
-        "HM-F"  = "high_mannose",
-        "C-S"   = "sialylated",
-        "CH-S"  = "sialylated",
-        "H-S"   = "sialylated",
-        "C-F"   = "fucosylated",
-        "CH-F"  = "fucosylated",
-        "H-F"   = "fucosylated",
-        "C-FS"  = "sialofucosylated",
-        "CH-FS" = "sialofucosylated",
-        "H-FS"  = "sialofucosylated",
-        "H-FS"  = "sialofucosylated"
+
+# subtypes ----------------------------------------------------------------
+file = "../data-raw/AZD-11_brian_regions-glycan_annotations-20200403.xlsx"
+subtype_map = read_excel(file, sheet = "Catagories", range = "A2:G9") %>% 
+    as.data.frame() %>%
+    melt(measure.vars = 1:7) %>%
+    filter(!is.na(value)) %>%
+    mutate(value = as.character(value), variable = as.character(variable))
+subtype_keys = unique(subtype_map$value)
+subtype_map = lapply(subtype_keys, function(key) 
+    subtype_map$variable[subtype_map$value == key])
+names(subtype_map) = subtype_keys
+
+# fucosylated
+fuc_map = read_excel(file, sheet = "Catagories",
+                      range = "A13:B24", col_names = FALSE) %>%
+    `colnames<-`(c("condition", "category")) %>%
+    mutate(
+        Fuc = gsub("^#=\\W*(\\d)+.+", "\\1", condition) %>% as.integer(),
+        NeuAc = gsub("^.+A[=≥](\\d)+.*$", "\\1", condition) %>% as.integer()
     )
-    data[[name]]$feature_data$subtype = subtype_map[subtypes]
+
+# sialylated
+sia_map = read_excel(file, sheet = "Catagories",
+                     range = "A30:B41", col_names = FALSE) %>%
+    `colnames<-`(c("condition", "category")) %>%
+    mutate(
+        NeuAc = gsub("^#\\W*=\\W*(\\d)+.+", "\\1", condition) %>% as.integer(),
+        Fuc = gsub("^.+B[=≥](\\d)+.*$", "\\1", condition) %>% as.integer()
+    )
+
+# structural
+struct_map = read_excel(file, sheet = "Catagories",
+                     range = "A45:B48", col_names = FALSE) %>%
+    `colnames<-`(c("condition", "category")) %>%
+    mutate(
+        HexNAc = gsub("^#\\W*=\\W*(\\d)+.*$", "\\1", condition) %>% as.integer()
+    )
+
+get_glyc_subtype = function(HexNAc, Fuc, NeuAc){
+    prefix_map = c("mono", "di", "tri", "tetra")
+    subtypes = character()
+    if(between(Fuc, 1, 4)) {
+        fuc_type = paste0(prefix_map[Fuc], "-fuc ")
+        fuc_suffix = ifelse(NeuAc == 0, " only", " (sialofuc)")
+        subtypes = c(subtypes, paste0(fuc_type, c("total", fuc_suffix)))
+    }
+    if(between(NeuAc, 1, 4)) {
+        sia_type = paste0(prefix_map[NeuAc], "-sia ")
+        sia_suffix = ifelse(Fuc == 0, " only", " (sialofuc)")
+        subtypes = c(subtypes, paste0(sia_type, c("total", sia_suffix)))
+    }
+    if(HexNAc == 4) subtypes = c(subtypes, "Bi-antennary")
+    else if (HexNAc == 5)  subtypes = c(subtypes, "Tri-antennary")
+    else if (HexNAc == 6) subtypes = c(subtypes, "Tetra-antennary")
+    else if (HexNAc == 7) subtypes = c(subtypes, "Bisecting GlcNAc")
+    return(subtypes)
+}
+
+for(name in names(data)){
+    glc_prefix = gsub("^(.+)_[0-9]+$", "\\1", Metabase::featureNames(data[[name]]))
+    data[[name]]$feature_data$subtype = lapply(
+        seq_len(nfeatures(data[[name]])), function(i){
+        subtypes = subtype_map[[glc_prefix[i]]]
+        HexNAc = data[[name]]$feature_data$HexNAc[i]
+        Fuc = data[[name]]$feature_data$Fuc[i]
+        NeuAc = data[[name]]$feature_data$NeuAc[i]
+        subtypes = c(subtypes, get_glyc_subtype(HexNAc, Fuc, NeuAc))
+        return(subtypes)
+    })
 }
 
 save(data, file = "brain.rda")

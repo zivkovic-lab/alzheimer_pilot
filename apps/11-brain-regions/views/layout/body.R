@@ -1,3 +1,4 @@
+import::here(PageOverview, .from="../pages/overview.R")
 import::here(PagePCA, .from="../pages/PCA.R")
 import::here(PageBarplot, .from="../pages/barplot.R")
 import::here(PageEA, .from="../pages/EA.R")
@@ -8,6 +9,7 @@ Body = R6Class(
     inherit = ShinyModule,
     public = list(
         # attributes
+        pageOverview = NULL,
         pagePCA = NULL,
         pageBarplot = NULL,
         pageLM = NULL,
@@ -15,6 +17,7 @@ Body = R6Class(
         
         # initializer
         initialize = function(){
+            self$pageOverview = PageOverview$new()
             self$pagePCA = PagePCA$new()
             self$pageBarplot = PageBarplot$new()
             self$pageLM = PageLM$new()
@@ -26,6 +29,7 @@ Body = R6Class(
             dashboardBody(
                 tags$link(href="styles.css", rel="stylesheet"),
                 tabItems(
+                    tabItem("overview", self$pageOverview$ui()),
                     tabItem("pca", self$pagePCA$ui()),
                     tabItem("bar", self$pageBarplot$ui()),
                     tabItem("lm", self$pageLM$ui()),
@@ -36,6 +40,7 @@ Body = R6Class(
         
         # server
         server = function(input, output, session){
+            self$pageOverview$call()
             self$pagePCA$call()
             self$pageBarplot$call()
             self$pageLM$call()

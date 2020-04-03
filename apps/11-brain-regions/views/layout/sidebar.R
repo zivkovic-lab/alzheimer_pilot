@@ -13,6 +13,7 @@ Sidebar = R6Class(
         ui = function(){
             dashboardSidebar(
                 sidebarMenu(
+                    menuItem("Overview", tabName = "overview"),
                     menuItem("PCA Plot", tabName = "pca"),
                     menuItem("Glycan Barplot", tabName = "bar"),
                     menuItem("Linear Model", tabName = "lm"),
