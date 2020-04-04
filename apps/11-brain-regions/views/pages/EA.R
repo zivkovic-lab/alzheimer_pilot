@@ -85,7 +85,7 @@ PageEA = R6Class(
                     width = 6,
                     box(
                         width = NULL,
-                        plotlyOutput(ns("plot")),
+                        uiOutput(ns("plot-ui")),
                         uiOutput(ns("help_plot"))
                     )
                 )
@@ -117,6 +117,12 @@ PageEA = R6Class(
                 ) %>%
                     formatSignif(round, digits = 4)
             })
+            
+            output$`plot-ui` = renderUI({
+                height = if (input$test_type == "fet") "550px" else "400px"
+                plotlyOutput(session$ns("plot"), height = height)
+            })
+            
             output$plot = renderPlotly({
                 list(
                     input$data_type,input$region, input$test_type,

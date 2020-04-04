@@ -13,9 +13,9 @@ pdata = read_excel(file, sheet = 3, na = 'n/a') %>%
     as.data.frame %>% 
     select(-`...2`) %>%
     data.table::setnames(old = "...1", "region") %>%
-    melt(id.vars = "region") %>%
-    separate(variable, into = c("group", "age"), sep = " ") %>%
-    mutate(age = as.integer(gsub('\\([0-9]+\\)', "\\1", age))) %>%
+    melt(id.vars = "region") %>% 
+    separate(variable, into = c("group", "age"), sep = " ") %>% 
+    mutate(age = as.integer(gsub('\\(([0-9]+)\\)', "\\1", age))) %>%
     filter(!is.na(value)) %>%
     column_to_rownames("value")
  
@@ -98,14 +98,14 @@ struct_map = read_excel(file, sheet = "Catagories",
     )
 
 get_glyc_subtype = function(HexNAc, Fuc, NeuAc){
-    prefix_map = c("mono", "di", "tri", "tetra")
+    prefix_map = c("mono", "di", "tri", "tetra", "penta", "hexa", "hepta")
     subtypes = character()
-    if(between(Fuc, 1, 4)) {
+    if(between(Fuc, 1, 7)) {
         fuc_type = paste0(prefix_map[Fuc], "-fuc ")
         fuc_suffix = ifelse(NeuAc == 0, " only", " (sialofuc)")
         subtypes = c(subtypes, paste0(fuc_type, c("total", fuc_suffix)))
     }
-    if(between(NeuAc, 1, 4)) {
+    if(between(NeuAc, 1, 6)) {
         sia_type = paste0(prefix_map[NeuAc], "-sia ")
         sia_suffix = ifelse(Fuc == 0, " only", " (sialofuc)")
         subtypes = c(subtypes, paste0(sia_type, c("total", sia_suffix)))
