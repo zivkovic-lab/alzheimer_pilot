@@ -214,6 +214,41 @@ DataModel = R6Class(
             )
         },
         
+        fet_with_age = function(data_type, region, age, alt) {
+            data = self$data[[data_type]]
+            data = subset_samples(data, data$pdata$region == region)
+            if (age == "70s"){
+                data = subset_samples(data, data$pdata$age < 80)   
+            } else {
+                data = subset_samples(data, data$pdata$age > 90)   
+            }
+            df = data.frame(
+                AD = data$edata[,data$pdata$group == "AD"],
+                NonAD = data$edata[,data$pdata$group == "NonAD"]
+            )
+            categories = unique(do.call(c, data$fdata$subtype))
+            lapply(categories, function(cat){
+                N = nrow(df)
+                m = sum(sapply(data$fdata$subtype, function(groups) cat %in% groups))
+                n = N - m
+                if(alt == "greater"){
+                    k = sum(df$AD > df$NonAD)
+                    x = sum(df$AD > df$NonAD & sapply(data$fdata$subtype, function(groups) cat %in% groups))
+                } else {
+                    k = sum(df$AD < df$NonAD)
+                    x = sum(df$AD < df$NonAD & sapply(data$fdata$subtype, function(groups) cat %in% groups))
+                }
+                fet = fisher.test(matrix(c(x, k-x, m-x, N-m-(k-x)), 2, 2), alternative = "greater")
+                pval = fet$p.value
+                odds_ratio = fet$estimate
+                res = c(N, m, n, k, x, pval, odds_ratio)
+                names(res) = c("N", "m", "n", "k", "x", "pval", "odds_ratio")
+                return(res)
+            }) %>%
+                do.call(rbind, .) %>%
+                `rownames<-`(categories)
+        },
+        
         get_enrichment_table = function(){
             if(is(self$ea, "EnrichmentFET")){
                 table = as.data.frame(self$ea$matrix)
@@ -239,22 +274,7 @@ DataModel = R6Class(
                 labels = c("not different", "different")   
             }
             if(is(self$ea, "EnrichmentFET")) {
-                data.frame(
-                    group = rownames(self$ea$matrix),
-                    x = self$ea$matrix[,"x"]
-                ) %>%
-                    mutate(y = self$ea$matrix[,"m"] - x) %>%
-                    arrange(desc(self$ea$pval)) %>%
-                    mutate(group = factor(group, levels = group)) %>%
-                    melt(id.vars = "group") %>%
-                    mutate(variable = factor(variable, levels = c("y", "x"),
-                                             labels = labels)) %>%
-                    ggplot(aes(x = group, y = value)) +
-                    geom_bar(aes(fill = variable), stat = "identity") +
-                    scale_fill_manual(values = c("grey30", pal_lancet()(9)[2])) +
-                    labs(x = NULL) +
-                    coord_flip() +
-                    guides(fill = guide_legend(title = NULL))
+                self$plot_fet(self$ea$matrix, self$ea$pval, labels)
             } else {
                 if(self$ea$alternative == "two.sided"){
                     pval = self$ea$fit_pvalues$raw
@@ -276,6 +296,25 @@ DataModel = R6Class(
                     guides(color = guide_legend(title = NULL)) +
                     labs(y = "Fn(pval)", title = "ecdf plot")
             }
+        },
+        
+        plot_fet = function(mat, pval, labels) {
+            data.frame(
+                group = rownames(mat),
+                x = mat[,"x"]
+            ) %>%
+                mutate(y = mat[,"m"] - x) %>%
+                arrange(desc(pval)) %>%
+                mutate(group = factor(group, levels = group)) %>%
+                melt(id.vars = "group") %>%
+                mutate(variable = factor(variable, levels = c("y", "x"),
+                                         labels = labels)) %>%
+                ggplot(aes(x = group, y = value)) +
+                geom_bar(aes(fill = variable), stat = "identity") +
+                scale_fill_manual(values = c("grey30", pal_lancet()(9)[2])) +
+                labs(x = NULL) +
+                coord_flip() +
+                guides(fill = guide_legend(title = NULL))
         }
     )
 )
