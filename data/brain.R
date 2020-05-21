@@ -37,7 +37,7 @@ abs_abund = GlycomicsSet(
 )
 
 # sheet 2
-rel_abund = read_excel(file, sheet = 2)
+rel_abund = read_excel(file, sheet = 2, range = "A1:AS436")
 fdata = rel_abund[,1:7] %>%
     as.data.frame %>%
     mutate(name = paste(Class, Glycan, sep="_")) %>%
