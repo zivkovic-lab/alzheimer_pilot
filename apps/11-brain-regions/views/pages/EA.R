@@ -85,8 +85,17 @@ PageEA = R6Class(
                     width = 6,
                     box(
                         width = NULL,
-                        uiOutput(ns("plot-ui")),
-                        uiOutput(ns("help_plot"))
+                        tabsetPanel(
+                            tabPanel(
+                                "Enrichment",
+                                uiOutput(ns("plot-ui")),
+                                uiOutput(ns("help_plot"))
+                            ),
+                            tabPanel(
+                                "Barplot",
+                                plotlyOutput(ns("barplot"))
+                            )
+                        )
                     )
                 )
             )
@@ -130,6 +139,18 @@ PageEA = R6Class(
                 )
                 if(!is.null(.DATA$ea))
                     .DATA$plot_enrichment(selected = input$table_rows_selected)
+            })
+            
+            output$barplot = renderPlotly({
+                list(
+                    input$test_type, input$test_alt, input$pcutoff
+                )
+                if(!is.null(.DATA$ea))
+                    .DATA$plot_enrichment_barplot(
+                        data_type = input$data_type,
+                        region = input$region,
+                        selected = input$table_rows_selected
+                    )
             })
             
             output$help_plot = renderUI({

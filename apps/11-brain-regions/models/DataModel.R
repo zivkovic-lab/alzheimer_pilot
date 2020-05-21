@@ -29,7 +29,7 @@ DataModel = R6Class(
                     age    = data$pdata$age
                 )
             sdev = (pca$sdev ^ 2) / sum(pca$sdev ^ 2)
-            p = ggplot(df, aes(x = PC1, y = PC2, group = group, region = region)) +
+            p = ggplot(df, aes(x = PC1, y = PC2, group = group, region = region, age = age)) +
                 geom_point(aes_string(color = color)) +
                 labs(x = glue("PC1 [ {round(sdev[1] * 100, 2)}% ]"),
                      y = glue("PC1 [ {round(sdev[2] * 100, 2)}% ]"))
@@ -262,6 +262,36 @@ DataModel = R6Class(
                 )
                 return(table)
             }
+        },
+        
+        plot_enrichment_barplot = function(data_type, region, selected) {
+            if(is.null(self$ea)) return()
+            group = names(self$ea$pval)[selected]
+            rgn = region
+            data.frame(
+                value = self$data[[data_type]]$edata[
+                    sapply(self$data[[data_type]]$fdata$subtype,
+                           function(x) group %in% x),
+                    ] %>% colSums()
+            ) %>%
+                cbind(self$data[[data_type]]$pdata) %>%
+                filter(region == rgn) %>%
+                arrange(group, age) %>%
+                mutate(individual = interaction(group, age)) %>%
+                mutate(individual = factor(individual, levels = unique(individual))) %>%
+                ggplot() +
+                geom_col(
+                    aes(x = individual, y = value, fill = individual),
+                    width = 0.6, color = "black"
+                ) +
+                scale_fill_npg() +
+                labs(y = data_type) +
+                theme_classic() +
+                theme(
+                    legend.position = "none",
+                    axis.title.x = element_blank(),
+                    axis.text = element_text(color = "black")
+                )
         },
         
         plot_enrichment = function(selected) {

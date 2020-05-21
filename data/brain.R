@@ -60,7 +60,7 @@ data = list(
 
 
 # subtypes ----------------------------------------------------------------
-file = "../data-raw/AZD-11_brian_regions-glycan_annotations-20200403.xlsx"
+file = "../data-raw/AZD-11_brian_regions-glycan_annotations_20200519.xlsx"
 subtype_map = read_excel(file, sheet = "Catagories", range = "A2:G9") %>% 
     as.data.frame() %>%
     melt(measure.vars = 1:7) %>%
@@ -73,7 +73,7 @@ names(subtype_map) = subtype_keys
 
 # fucosylated
 fuc_map = read_excel(file, sheet = "Catagories",
-                      range = "A13:B24", col_names = FALSE) %>%
+                      range = "A13:B33", col_names = FALSE) %>%
     `colnames<-`(c("condition", "category")) %>%
     mutate(
         Fuc = gsub("^#=\\W*(\\d)+.+", "\\1", condition) %>% as.integer(),
@@ -82,16 +82,16 @@ fuc_map = read_excel(file, sheet = "Catagories",
 
 # sialylated
 sia_map = read_excel(file, sheet = "Catagories",
-                     range = "A30:B41", col_names = FALSE) %>%
+                     range = "A37:B54", col_names = FALSE) %>%
     `colnames<-`(c("condition", "category")) %>%
     mutate(
         NeuAc = gsub("^#\\W*=\\W*(\\d)+.+", "\\1", condition) %>% as.integer(),
         Fuc = gsub("^.+B[=≥](\\d)+.*$", "\\1", condition) %>% as.integer()
     )
 
-# structural
+# structural_a
 struct_map = read_excel(file, sheet = "Catagories",
-                     range = "A45:B48", col_names = FALSE) %>%
+                     range = "A59:B62", col_names = FALSE) %>%
     `colnames<-`(c("condition", "category")) %>%
     mutate(
         HexNAc = gsub("^#\\W*=\\W*(\\d)+.*$", "\\1", condition) %>% as.integer()
@@ -114,6 +114,7 @@ get_glyc_subtype = function(HexNAc, Fuc, NeuAc){
     else if (HexNAc == 5)  subtypes = c(subtypes, "Tri-antennary")
     else if (HexNAc == 6) subtypes = c(subtypes, "Tetra-antennary")
     else if (HexNAc == 7) subtypes = c(subtypes, "Bisecting GlcNAc")
+    
     return(subtypes)
 }
 
@@ -122,6 +123,12 @@ for(name in names(data)){
     data[[name]]$feature_data$subtype = lapply(
         seq_len(nfeatures(data[[name]])), function(i){
         subtypes = subtype_map[[glc_prefix[i]]]
+        if(grepl("^CH", glc_prefix[i]))
+            subtypes = c(subtypes, "Complex")
+        else if(grepl("^C", glc_prefix[i]))
+            subtypes = c(subtypes, "Complex/Hybrid")
+        else if(grepl("^H", glc_prefix[i]))
+            subtypes = c(subtypes, "Hybrid")
         HexNAc = data[[name]]$feature_data$HexNAc[i]
         Fuc = data[[name]]$feature_data$Fuc[i]
         NeuAc = data[[name]]$feature_data$NeuAc[i]
