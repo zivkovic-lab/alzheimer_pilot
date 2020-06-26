@@ -1,0 +1,1114 @@
+---
+title: "AMP-AD Data Mining"
+author: "Chenghao Zhu"
+date: "`r strftime(Sys.time(), '%Y-%m-%d')`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, error = FALSE, message = FALSE)
+```
+
+```{r}
+pkgs=c("dplyr", "reshape2", "ggplot2", "edgeR", "limma", "DT", "stringr",
+       "clusterProfiler", "org.Hs.eg.db", "biomaRt", "ggsci", "cowplot", "ggExtra")
+for(pkg in pkgs){
+    suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+}
+```
+
+# MayoRNASeq
+
+## 1. preprocessing and linear model fitt1ing {.tabset}
+
+```{r}
+## CBE
+edata1 = data.table::fread(
+    "../../data-raw/MayoRNASeq/MayoRNAseq_RNAseq_CBE_geneCounts_normalized.tsv",
+    sep = "\t"
+) %>%
+    as.data.frame() %>%
+    tibble::column_to_rownames("ensembl_id") %>%
+    as.matrix()
+colnames(edata1) = gsub("^X", "", colnames(edata1))
+covariates = read.csv("../../data-raw/MayoRNASeq/MayoRNAseq_RNAseq_CER_covariates.csv")
+rownames(covariates) = covariates$SampleID
+pdata1 = covariates[colnames(edata1),]
+
+# remove patients that the Diagnosis is NA
+pdata1 = pdata1[!is.na(pdata1$Diagnosis),]
+edata1 = edata1[,rownames(pdata1)]
+
+# relevel Diagnosis to Control
+pdata1$Diagnosis = factor(pdata1$Diagnosis)
+pdata1$Diagnosis = relevel(pdata1$Diagnosis, ref = "Control")
+pdata1$ApoE = factor(pdata1$ApoE)
+
+# # only keep Control and AD
+# pdata1 = pdata1[pdata1$Diagnosis %in% c("Control", "AD"), ]
+# edata1 = edata1[, rownames(pdata1)]
+
+# qc = read.delim("../../data-raw/MayoRNASeq/MayoRNASeq_RNASeq_CBE_QCdetails.txt")
+
+# TCX
+edata2 = data.table::fread("../../data-raw/MayoRNASeq/MayoRNAseq_RNAseq_TCX_geneCounts_normalized.tsv", sep = "\t") %>%
+    as.data.frame() %>%
+    tibble::column_to_rownames("ensembl_id") %>%
+    as.matrix()
+colnames(edata2) = gsub("^X", "", colnames(edata2))
+covariates = read.csv("../../data-raw/MayoRNASeq/MayoRNAseq_RNAseq_TCX_covariates.csv")
+rownames(covariates) = covariates$SampleID
+pdata2 = covariates[colnames(edata2),]
+
+# remove patients that the Diagnosis is NA
+pdata2 = pdata2[!is.na(pdata2$Diagnosis),]
+edata2 = edata2[,rownames(pdata2)]
+
+# relevel Diagnosis to Control
+pdata2$Diagnosis = factor(pdata2$Diagnosis)
+pdata2$Diagnosis = relevel(pdata2$Diagnosis, ref = "Control")
+pdata2$ApoE = factor(pdata2$ApoE)
+```
+
+```{r, eval = FALSE, include=FALSE}
+ensembl = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+ensembl = getBM(
+    attributes = c(
+        "ensembl_gene_id", "description", "gene_biotype", "chromosome_name",
+        "start_position", "end_position", "strand"
+    ),
+    mart = ensembl
+)
+write.table(ensembl, file = "data/ensembl_anno.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+
+```{r, eval = FALSE, include = FALSE}
+fdata = data.frame(
+    row.names = rownames(edata1),
+    ensembl_id = rownames(edata1)
+)
+gene_data = bitr(fdata$ensembl_id, "ENSEMBL", c("ENTREZID", "SYMBOL"), drop=FALSE, OrgDb = org.Hs.eg.db)
+fdata = fdata %>%
+    mutate(
+        entrez_id = lapply(ensembl_id, function(id) gene_data$ENTREZID[gene_data$ENSEMBL == id]),
+        gene_name = sapply(ensembl_id, function(id) gene_data$SYMBOL[gene_data$ENSEMBL == id][1])
+    )
+fdata = fdata %>%
+    mutate(
+        gene_biotype = ensembl$gene_biotype[match(ensembl_id, ensembl$ensembl_gene_id)],
+        description = ensembl$description[match(ensembl_id, ensembl$ensembl_gene_id)]
+    )
+rownames(fdata) = fdata$ensembl_id
+saveRDS(fdata, "data/mayo_fdata.rds")
+```
+
+```{r}
+fdata = readRDS("data/mayo_fdata.rds")
+```
+
+```{r, eval = FALSE, include = FALSE}
+fdata %>%
+    filter(is.na(entrez_id)) %>%
+    group_by(gene_biotype) %>%
+    summarize(n = length(gene_biotype)) %>%
+    ungroup() %>%
+    arrange(desc(n)) %>%
+    mutate(gene_biotype = factor(gene_biotype, levels = gene_biotype)) %>%
+    ggplot(aes(x = gene_biotype, y = n)) +
+    geom_col(fill = "blue", color = "black") +
+    geom_text(aes(y = n + max(n) * 0.05, label = n), angle= 90, size = 3) +
+    theme_classic() +
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text = element_text(color = "black")
+    )
+```
+
+The [MayoRNAseq](https://www.synapse.org/#!Synapse:syn5550404) dataset has whole transcriptome data for 275 Cerebellum (CBE) and 276 Temporal cortex (TCX) samples from 312 North American Caucasian subjects with neuropathological diagnosis of AD, progressive supranuclear palsy (PSP), pathologic aging (PA) or elderly controls (CON) without neurodegenerative diseases. All ADs had definite diagnosis according to the NINCDS-ADRDA criteria and had Braak NFT stage of IV or greater. Control subjects had Braak NFT stage of III or less, CERAD neuritic and cortical plaque densities of 0 (none) or 1 (sparse) and lacked any of the following pathologic diagnoses: AD, Parkinson’s disease (PD), DLB, VaD, PSP, motor neuron disease (MND), CBD, Pick’s disease (PiD), Huntington’s disease (HD), FTLD, hippocampal sclerosis (HipScl) or dementia lacking distinctive histology (DLDH). Subjects with PA also lacked the above diagnoses and had Braak NFT stage of III or less, but had CERAD neuritic and cortical plaque densities of 2 or more. None of the PA subjects had a clinical diagnosis of dementia or mild cognitive impairment.
+
+The expression matrix was downloaded from the [AMP-AD Knowledge Protal](https://adknowledgeportal.synapse.org/Explore/Data). Genes which were observed in less than 4 samples were removed from analysis. Gene annotation was done using the `org.Hs.eg.db` and `clusterProfiler` package. A linear model was then fitted comparing AD vs control using limma's eBayes pipeline. For simplicity, I didn't adjust the model with age, ApoE, sex, or any other clinival variables.
+
+<p class="alert alert-info">
+    Note: you can switch between tabs to see different things.
+</p>
+
+### Cerebellum
+
+```{r}
+design = model.matrix(~ Diagnosis, data = pdata1)
+
+# d0 = DGEList(edata1)
+# d0 = calcNormFactors(d0)
+# d = d0[apply(cpm(d0), 1, function(x) sum(x != 0)) >= 8,]
+
+# plotMDS(d, col = as.numeric(pdata1$Diagnosis))
+# 
+# pca = prcomp(t(cpm(d)), scale. = TRUE, center = TRUE)
+# pdata1 %>%
+#     mutate(
+#         pc1 = pca$x[,"PC1"],
+#         pc2 = pca$x[,"PC2"],
+#     ) %>%
+#     ggplot(aes(x = pc1, y = pc2)) +
+#     geom_point(aes(color = Diagnosis))
+
+# y = voom(d, design, plot = TRUE)
+
+x = apply(edata1, 1, function(x) sum(x != 0))
+y = log(edata1[x > 3,] + 1)
+
+fit1 = lmFit(y, design)
+fit1 = eBayes(fit1)
+tt1 = topTable(fit1, coef = "DiagnosisAD", number = Inf, sort.by = NULL)
+
+ggplot(tt1) +
+    geom_histogram(aes(x = P.Value), binwidth = 0.025, color = "white", fill = pal_lancet()(1)) +
+    labs(title = "Cerebellum") +
+    theme_classic() +
+    theme(
+        plot.title = element_text(hjust = 0.5),
+        axis.text = element_text(color = "black")
+    )
+```
+
+### Temporal Cortex
+
+```{r}
+design = model.matrix(~ Diagnosis, data = pdata2)
+
+x = apply(edata2, 1, function(x) sum(x != 0))
+y = log(edata2[x > 3,] + 1)
+
+fit2 = lmFit(y, design)
+fit2 = eBayes(fit2)
+tt2 = topTable(fit2, coef = "DiagnosisAD", number = Inf, sort.by = NULL)
+ggplot(tt2) +
+    geom_histogram(aes(x = P.Value), binwidth = 0.025, color = "white", fill = pal_lancet()(1)) +
+    labs(title = "Temporal Cortex") +
+    theme_classic() +
+    theme(
+        plot.title = element_text(hjust = 0.5),
+        axis.text = element_text(color = "black")
+    )
+```
+
+## 2. KEGG pathway enrichment
+
+The first question to ask is, are certain glycosylation-related pathways enriched in AD vs control? The KEGG pathway mapping was done in three manners, two-sided, upregulated, and downregulated. The two-sided uses all genes with a P < 0.05 (unadjusted) in the linear model. The upregulated uses genes with a P < 0.05 and fold change > 0, while the downregulated uses genes with a P < 0.05 and fold change < 0.
+
+The result below shows that in cerebellum, genes that were upregulated in AD are enriched in the Proteoglycans in cancer pathway, and genes that were downregulated are enriched in the N-Glycan biosynthesis and Glycosaminoglycan biosynthesis - heparan sulfate / heparin pathway. In temporal cortex, genes that were upregulated in AD are enriched in the N-Glycan biosynthesis and Other types of O-glycan biosynthesis pathway.
+
+```{r}
+dotplot_glycan = function(ke){
+    ke@result[grep("glycan", ke@result$Description, ignore.case = TRUE),] %>%
+        mutate(
+            GeneRatio = sapply(GeneRatio, function(x) eval(parse(text = x)))
+        ) %>%
+        arrange(GeneRatio) %>%
+        mutate(Description = factor(Description, levels = Description)) %>%
+        ggplot() +
+        geom_point(aes(x = GeneRatio, y = Description, color = pvalue, size = Count)) +
+        scale_color_gradient(low = pal_lancet()(2)[1], high = pal_lancet()(2)[2]) +
+        labs(y = NULL) +
+        theme_bw() +
+        theme(
+            axis.text = element_text(color = "black",size = 12),
+            plot.title = element_text(hjust = 0.5)
+        )
+}
+```
+
+### Cerebellum
+
+#### Enrichment Result {.tabset}
+
+##### two sided
+
+```{r}
+genelist = rownames(tt1)[tt1$P.Value < 0.05]
+genelist = do.call(c, fdata[genelist, "entrez_id"])
+genelist = genelist[!is.na(genelist)]
+ke1 = enrichKEGG(genelist)
+ke1@result[grep("glycan", ke1@result$Description, ignore.case = TRUE),2:7] %>%
+    tibble::rownames_to_column("kegg_id") %>%
+    mutate(Description = glue::glue("<a href='https://www.genome.jp/dbget-bin/www_bget?pathway:{kegg_id}'>{Description}</a>")) %>%
+    datatable(escape = FALSE) %>%
+    formatSignif(columns = 4:7, digits = 3)
+```
+
+##### upreguated
+
+```{r}
+genelist = rownames(tt1)[tt1$P.Value < 0.05 & tt1$logFC > 0]
+genelist = fdata[genelist, "entrez_id"]
+genelist = genelist[!is.na(genelist)]
+ke2 = enrichKEGG(genelist)
+ke2@result[grep("glycan", ke2@result$Description, ignore.case = TRUE),2:7]%>%
+    tibble::rownames_to_column("kegg_id") %>%
+    mutate(Description = glue::glue("<a href='https://www.genome.jp/dbget-bin/www_bget?pathway:{kegg_id}'>{Description}</a>"))%>%
+    datatable(escape = FALSE) %>%
+    formatSignif(columns = 4:7, digits = 3)
+```
+
+##### downregulated
+
+```{r}
+genelist = rownames(tt1)[tt1$P.Value < 0.05 & tt1$logFC < 0]
+genelist = fdata[genelist, "entrez_id"]
+genelist = genelist[!is.na(genelist)]
+ke3 = enrichKEGG(genelist)
+ke3@result[grep("glycan", ke3@result$Description, ignore.case = TRUE),2:7]%>%
+    tibble::rownames_to_column("kegg_id") %>%
+    mutate(Description = glue::glue("<a href='https://www.genome.jp/dbget-bin/www_bget?pathway:{kegg_id}'>{Description}</a>"))%>%
+    datatable(escape = FALSE) %>%
+    formatSignif(columns = 4:7, digits = 3)
+```
+
+#### Dotplot {.tabset}
+
+##### two sided
+
+```{r}
+dotplot_glycan(ke1)
+```
+
+##### upreguated
+
+```{r}
+dotplot_glycan(ke2)
+```
+
+##### downregulated
+
+```{r}
+dotplot_glycan(ke3)
+```
+
+### Temporal Cortex
+
+#### Enrichment Result {.tabset}
+
+##### two sided
+
+```{r}
+genelist = rownames(tt2)[tt2$P.Value < 0.05]
+genelist = do.call(c, fdata[genelist, "entrez_id"])
+genelist = genelist[!is.na(genelist)]
+ke1 = enrichKEGG(genelist)
+ke1@result[grep("glycan", ke1@result$Description, ignore.case = TRUE),2:7]%>%
+    tibble::rownames_to_column("kegg_id") %>%
+    mutate(Description = glue::glue("<a href='https://www.genome.jp/dbget-bin/www_bget?pathway:{kegg_id}'>{Description}</a>"))%>%
+    datatable(escape = FALSE)%>%
+    formatSignif(columns = 4:7, digits = 3)
+```
+
+##### upregulated
+
+```{r}
+genelist = rownames(tt2)[tt2$P.Value < 0.05 & tt2$logFC > 0]
+genelist = do.call(c, fdata[genelist, "entrez_id"])
+genelist = genelist[!is.na(genelist)]
+ke2 = enrichKEGG(genelist)
+ke2@result[grep("glycan", ke2@result$Description, ignore.case = TRUE),2:7]%>%
+    tibble::rownames_to_column("kegg_id") %>%
+    mutate(Description = glue::glue("<a href='https://www.genome.jp/dbget-bin/www_bget?pathway:{kegg_id}'>{Description}</a>"))%>%
+    datatable(escape = FALSE)%>%
+    formatSignif(columns = 4:7, digits = 3)
+```
+
+##### downregulated
+
+```{r}
+genelist = rownames(tt2)[tt2$P.Value < 0.05 & tt2$logFC < 0]
+genelist = do.call(c, fdata[genelist, "entrez_id"])
+genelist = genelist[!is.na(genelist)]
+ke3 = enrichKEGG(genelist)
+ke3@result[grep("glycan", ke3@result$Description, ignore.case = TRUE),2:7]%>%
+    tibble::rownames_to_column("kegg_id") %>%
+    mutate(Description = glue::glue("<a href='https://www.genome.jp/dbget-bin/www_bget?pathway:{kegg_id}'>{Description}</a>"))%>%
+    datatable(escape = FALSE)%>%
+    formatSignif(columns = 4:7, digits = 3)
+```
+
+#### Dotplot {.tabset}
+
+##### two sided
+
+```{r}
+dotplot_glycan(ke1)
+```
+
+##### upregulated
+
+```{r}
+dotplot_glycan(ke2)
+```
+
+##### downregulated
+
+```{r}
+dotplot_glycan(ke3)
+```
+
+## 3 Glycosylation-related gene-set
+
+Here I composed a sest of gene that is in at least on of the glycosylation related KEGG pathways. The red points in the volcano plots below are glyco-set genes.
+
+### volcanoplots {.tabset}
+
+#### Cerebellum
+
+```{r}
+# glyco_set2 = c(
+#     "ALG1", "ALG5", "ALG6", "ST3GAL3", "POMK", "CHST6", "DPM3", "DSE", "NEU4",
+#     "AKT3", "HS3ST1", "POMGNT2", 
+# )
+glyco_set = ke1@geneSets[rownames(ke1@result)[grep("glycan", ke1@result$Description, ignore.case = TRUE)]]
+glyco_set = unique(do.call(c, glyco_set))
+tt1 %>%
+    tibble::rownames_to_column("gene_id") %>%
+    mutate(glyco_set = gene_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]) %>%
+    arrange(glyco_set) %>%
+    ggplot() +
+    geom_hline(yintercept = -log(0.05), linetype = "dashed") +
+    geom_point(aes(x = logFC, y = -log(P.Value), color = glyco_set)) +
+    scale_color_manual(values = c(alpha("grey50", 0.3), alpha(pal_lancet()(1), 0.7))) +
+    theme(
+        legend.title = element_blank()
+    ) +
+    theme_classic()
+```
+
+#### Temporal Cortex
+
+```{r}
+tt2 %>%
+    tibble::rownames_to_column("gene_id") %>%
+    mutate(glyco_set = gene_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]) %>%
+    arrange(glyco_set) %>%
+    ggplot() +
+    geom_hline(yintercept = -log(0.05), linetype = "dashed") +
+    geom_point(aes(x = logFC, y = -log(P.Value), color = glyco_set)) +
+    scale_color_manual(values = c(alpha("grey50", 0.3), alpha(pal_lancet()(1), 0.7))) +
+    theme(
+        legend.title = element_blank()
+    ) +
+    theme_classic()
+```
+
+### glyco-set compare to the background
+
+The next question is, are genes from the glycan set generally differentially expressed in AD? The plots below showed that, the mean of t-statistics of the glyco-set genes were above zero, while the mean of the rest genes are very closed to zero. This may suggest that the there more genes upregulated in the glyco-set.
+
+```{r}
+plot_grid(
+    data.frame(
+        ensembl_id = rownames(tt1),
+        t = tt1$t
+    ) %>%
+        mutate(
+            glyco_set = ensembl_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]
+        ) %>%
+        ggplot(aes(x = glyco_set, y = t)) +
+        geom_jitter(size = 0.1, alpha = 0.5, width = 0.1) +
+        geom_violin(aes(fill = glyco_set), alpha = 0.5) +
+        geom_boxplot(width = 0.05, alpha = 0.75, outlier.shape = NA) +
+        scale_fill_lancet() +
+        guides(fill = guide_legend(nrow = 1)) +
+        theme_bw()+
+        theme(legend.position = "top"),
+    data.frame(
+        ensembl_id = rownames(tt2),
+        t = tt2$t
+    ) %>%
+        mutate(
+            glyco_set = ensembl_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]
+        ) %>%
+        ggplot(aes(x = glyco_set, y = t)) +
+        geom_jitter(size = 0.1, alpha = 0.5, width = 0.1) +
+        geom_violin(aes(fill = glyco_set), alpha = 0.5) +
+        geom_boxplot(width = 0.05, alpha = 0.75, outlier.shape = NA) +
+        scale_fill_lancet() +
+        guides(fill = guide_legend(nrow = 1)) +
+        theme_bw()+
+        theme(legend.position = "top"),
+    nrow = 1
+)
+```
+
+```{r}
+df = data.frame(ensembl_id = rownames(tt1), cbe = tt1$t) %>%
+    merge(data.frame(ensembl_id = rownames(tt2), tcx = tt2$t)) %>%
+    mutate(
+        glyco_set = ensembl_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]
+    ) %>%
+    arrange(glyco_set)
+p = df %>% ggplot(aes(x = cbe, y = tcx)) +
+    geom_point(aes(color = glyco_set), size = 0.5) +
+    scale_color_manual(values = c(alpha("grey4", 0.3), alpha(pal_lancet()(2)[2], 0.8))) +
+    theme_bw() +
+    theme(legend.position = "none")
+ggMarginal(p, type = "histogram")
+```
+
+```{r, eval = FALSE, include = FALSE}
+data.frame(ensembl_id = rownames(tt1), cbe = tt1$t) %>%
+    merge(data.frame(ensembl_id = rownames(tt2), tcx = tt2$t)) %>%
+    filter(
+        !ensembl_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]
+    ) %>%
+    with(., cor.test(cbe, tcx))
+```
+
+```{r, eval = FALSE, include = FALSE}
+data.frame(ensembl_id = rownames(tt1), cbe = tt1$t) %>%
+    merge(data.frame(ensembl_id = rownames(tt2), tcx = tt2$t)) %>%
+    filter(
+        ensembl_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]
+    ) %>%
+    with(., cor.test(cbe, tcx))
+```
+
+```{r, include=FALSE, eval = FALSE}
+library(openxlsx)
+
+suffixes = c("ad", "pa", "psp")
+
+tt_ceb = lapply(1:3, function(i){
+    coef = colnames(design)[i+1]
+    tt = topTable(fit1, coef = coef, number = Inf, sort.by = "none")%>% 
+        tibble::rownames_to_column("ensembl_id") %>% 
+        dplyr::select(ensembl_id, logFC, t, P.Value, adj.P.Val) %>%
+        dplyr::rename(pval = P.Value, padj = adj.P.Val) %>%
+        tibble::column_to_rownames("ensembl_id")
+    colnames(tt) = paste(colnames(tt), "ceb", suffixes[i], sep = ".")
+    tt
+}) %>%
+    do.call(cbind, .)
+
+tt_ctx = lapply(1:3, function(i){
+    coef = colnames(design)[i+1]
+    tt = topTable(fit2, coef = coef, number = Inf, sort.by = "none")%>% 
+        tibble::rownames_to_column("ensembl_id") %>% 
+        dplyr::select(ensembl_id, logFC, t, P.Value, adj.P.Val) %>%
+        dplyr::rename(pval = P.Value, padj = adj.P.Val) %>%
+        tibble::column_to_rownames("ensembl_id")
+    colnames(tt) = paste(colnames(tt), "ctx", suffixes[i], sep = ".")
+    tt
+}) %>%
+    do.call(cbind, .)
+
+
+outfile = "data/MayoRNAseq_glyco-set_stats.xlsx"
+tt = full_join(
+    tt_ceb %>% tibble::rownames_to_column("ensembl_id"),
+    tt_ctx %>% tibble::rownames_to_column("ensembl_id"),
+    by = "ensembl_id"
+) %>%
+    left_join(
+        fdata, by = "ensembl_id"
+    ) %>%
+    filter(sapply(entrez_id, function(id){
+        any(id %in% glyco_set)
+    })) %>%
+    dplyr::select(-entrez_id)
+
+tt = tt[,c(1,27,26,28, 2:25)]
+
+wb = createWorkbook()
+sheetname = "All Comparisons"
+addWorksheet(wb, sheetname)
+writeData(wb, sheetname, tt[,1:4], startRow = 3 )
+for(i in 1:6){
+    x = unique(str_split_fixed(colnames(tt)[5:28], "\\.", 2)[,2])[i]
+    region = str_split_fixed(x, "\\.",2)[1]
+    region = ifelse(region == "ceb", "Cerebellum", "Temporal Cortex")
+    group = str_split_fixed(x, "\\.",2)[2]
+    group = toupper(group)
+    
+    startCol = (i - 1) * 4 + 4 + 1
+    if(i %in% c(1,4)) {
+        writeData(wb, sheetname, region, startCol = startCol, startRow = 1)
+        mergeCells(wb, sheetname, startCol:(startCol + 11), rows = 1)
+    }
+    writeData(wb, sheetname, group, startCol = startCol, startRow = 2)
+    mergeCells(wb, sheetname, startCol:(startCol + 3), rows = 2)
+    
+    data = tt[startCol:(startCol + 3)]
+    colnames(data) = str_split_fixed(colnames(data), "\\.", 2)[,1]
+    writeData(wb, sheetname, data, startCol = startCol, startRow = 3)
+}
+
+# col widths
+# set width for all cols
+setColWidths(wb, sheetname, cols = 1:28, widths = 12)
+# set width for ensembl_id
+setColWidths(wb, sheetname, cols = 1, width = 18)
+# set width for description
+setColWidths(wb, sheetname, cols = 4, width = 60)
+
+# set header
+headerStyle = lapply(c("top","middle","bottom"), function(x){
+    border = switch(
+        x, "top" = "Top", "middle" = NULL, "bottom" = "Bottom"
+    )
+    halign = ifelse(x == "bottom", "left", "center")
+    createStyle(
+        fgFill = "#bababa", border = border, textDecoration = "BOLD",
+        halign = halign
+    )
+})
+names(headerStyle) = c("top", "middle", "bottom")
+addStyle(wb, sheetname, headerStyle$top, rows = 1, cols = 1:28, gridExpand = TRUE)
+addStyle(wb, sheetname, headerStyle$middle, rows = 2, cols = 1:28, gridExpand = TRUE)
+addStyle(wb, sheetname, headerStyle$bottom, rows = 3, cols = 1:28, gridExpand = TRUE)
+
+# sheet2
+abs_scale = function(x){
+    max = max(abs(max(x)), abs(min(x)))
+    x / max
+}
+ttsub = tt %>%
+    filter(padj.ctx.ad < 0.05) %>%
+    dplyr::select(
+        ensembl_id, gene_biotype, gene_name, description,
+        t.ctx.ad, pval.ctx.ad, padj.ctx.ad,
+        logFC.ctx.ad, logFC.ctx.pa, logFC.ctx.psp,
+        t.ctx.pa, t.ctx.psp,
+        pval.ctx.pa, pval.ctx.psp
+    ) %>%
+    mutate(t.ctx.ad = abs_scale(t.ctx.ad),
+           t.ctx.pa = abs_scale(t.ctx.pa),
+           t.ctx.psp = abs_scale(t.ctx.psp)) %>%
+    mutate(logFC.ctx.pa = ifelse(pval.ctx.pa > 0.05, NA, logFC.ctx.pa),
+           logFC.ctx.psp = ifelse(pval.ctx.psp > 0.05, NA, logFC.ctx.psp))
+sheetname = "Differnetial Genes"
+addWorksheet(wb, sheetname)
+writeData(wb, sheetname, ttsub[1:10])
+colorbar = colorRampPalette(c(pal_lancet()(2)[1], "white", pal_lancet()(2)[2]))(256)
+color_mat = lapply(seq_len(nrow(ttsub)), function(i){
+    sapply(c("ad", "pa", "psp"), function(j){
+        t = ttsub[i, paste0("t.ctx.", j)]
+        p = ttsub[i, paste0("pval.ctx.", j)]
+        if(p > 0.05) return(NA)
+        color = floor((t + 1 )/ 2 * 256)
+        color = colorbar[floor((t + 1 )/ 2 * 256)]
+        return(color)
+    })
+}) %>%
+    do.call(rbind, .)
+for(i in seq_len(nrow(ttsub)) + 1){
+    for(j in 8:10){
+        color = color_mat[i-1, j - 7]
+        if(is.na(color)) next
+        myStyle = createStyle(fgFill = color)
+        addStyle(wb, sheetname, cols = j, rows = i, style = myStyle)
+    }
+}
+saveWorkbook(wb, file = outfile, overwrite = TRUE)
+```
+
+### glycosylateion-related genes that were differentially expressed in both brain regions.
+
+```{r}
+merge(
+    tibble::rownames_to_column(tt1, "gene_id") %>% dplyr::select(gene_id, logFC, t, P.Value),
+    tibble::rownames_to_column(tt2, "gene_id") %>% dplyr::select(gene_id, logFC, t, P.Value),
+    by = "gene_id", suffixes = c("_cbe", "_tcx")
+) %>%
+    filter(
+        gene_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]
+    ) %>%
+    arrange(P.Value_cbe) %>%
+    mutate(gene_name = sapply(gene_id, function(x) fdata$gene_name[fdata$ensembl_id == x])) %>%
+    mutate(gene_name = glue::glue("<a href='https://uswest.ensembl.org/Homo_sapiens/Gene/Summary?g={gene_id}'>{gene_name}</a>")) %>%
+    dplyr::select(gene_name, ends_with("cbe"), ends_with("tcx")) %>%
+    datatable(escape = FALSE) %>%
+    formatSignif(columns = 2:7, digits = 3)
+```
+
+```{r, eval = FALSE, include = FALSE}
+tt2 %>%
+    tibble::rownames_to_column("gene_id") %>%
+    filter(
+        gene_id %in% fdata$ensembl_id[sapply(fdata$entrez_id, function(x) any(x %in% glyco_set))]
+    ) %>%
+    arrange(P.Value) %>%
+    mutate(gene_name = sapply(gene_id, function(x) fdata$gene_name[fdata$ensembl_id == x])) %>%
+    select(gene_name, logFC, AveExpr, t, P.Value, adj.P.Val)
+```
+
+```{r}
+boxplot_gene = function(tt1, symbol) {
+    ensembl_id = fdata$ensembl_id[!is.na(fdata$gene_name) & fdata$gene_name == symbol]
+    data.frame(
+        gene = edata1[ensembl_id,],
+        Diagnosis = pdata1$Diagnosis,
+        region = "Cerebellum"
+    ) %>%
+        rbind(data.frame(
+            gene = edata2[ensembl_id,],
+            Diagnosis = pdata2$Diagnosis,
+            region = "Temporal Cortex"
+        )) %>%
+        mutate(Diagnosis = factor(Diagnosis, levels = c("Control", "Pathologic Aging", "PSP", "AD"))) %>%
+        ggplot(aes(x = Diagnosis, y = gene)) +
+        facet_grid(cols = vars(region)) +
+        geom_jitter(width = 0.25, color = "gray40", alpha = 0.8) +
+        geom_boxplot(aes(fill = Diagnosis), alpha = 0.6, outlier.shape = NA) +
+        labs(y = symbol) +
+        scale_fill_lancet() +
+        theme_classic() +
+        theme(
+            axis.text = element_text(color = "black"),
+            axis.text.y = element_text(angle = 90)
+        )
+}
+```
+
+#### Enzymes {.tabset}
+
+##### ST6GAL2
+
+```{r}
+boxplot_gene(tt1, "ST6GAL2")
+```
+
+
+##### ST3GAL3
+
+```{r}
+boxplot_gene(tt1, "ST3GAL3")
+```
+
+##### ST3GAL1
+
+```{r}
+boxplot_gene(tt1, "ST3GAL1")
+```
+
+##### CHST6
+
+```{r}
+boxplot_gene(tt1, "CHST6")
+```
+
+##### ALG5
+
+```{r}
+boxplot_gene(tt1, "ALG5")
+```
+
+##### ALG11
+
+```{r}
+boxplot_gene(tt1, "ALG11")
+```
+
+##### ALG13
+
+```{r}
+boxplot_gene(tt1, "ALG13")
+```
+
+
+##### MAN1C1
+
+```{r}
+boxplot_gene(tt1, "MAN1C1")
+```
+
+##### FUT9
+
+```{r}
+boxplot_gene(tt1, "FUT9")
+```
+
+##### GALNT2
+
+```{r}
+boxplot_gene(tt1, "GALNT2")
+```
+
+##### POMGNT1
+
+```{r}
+boxplot_gene(tt1, "POMGNT1")
+```
+
+##### POMGNT2
+
+```{r}
+boxplot_gene(tt1, "POMGNT2")
+```
+
+
+#### TF and Signal Proteins {.tabset}
+
+##### SOS1
+
+```{r}
+boxplot_gene(tt1, "SOS1")
+```
+
+##### ARHGEF12
+
+```{r}
+boxplot_gene(tt1, "ARHGEF12")
+```
+
+##### CBL
+
+```{r}
+boxplot_gene(tt1, "CBL")
+```
+
+##### FGFR1
+
+```{r}
+boxplot_gene(tt1, "FGFR1")
+```
+
+##### MAPK14
+
+```{r}
+boxplot_gene(tt1, "MAPK14")
+```
+
+# Mayo Proteomics
+
+For the proteomics analysis, 195 temporal cortex samples from 29 contorl, 82 AD, and 84 PSP patients were analyzed. Samples were analyzed in a data dependent manner. MS raw data was processed and analyzed using MaxQuant. More detail about the method can be found [here](https://www.synapse.org/#!Synapse:syn7431760). The variables provided in the datasets are:
+
++ Peptides (number of)
++ Razor + unique peptides (number of)
++ Unique peptides (number of)
++ Intensity
++ iBAQ
++ LFQ intensity
++ MS/MS Count
+
+Although not mentioned in the data description page, but they should be all outputted by MaxQuant. The `Intensity` should be the summed peptide intensities, however, its all zero or near-zero. After trying iBAQ and LFQ, I chose the former, because LFQ generates a skewed p-value histogram, which usually means the data normalization wasn't done right.
+
+```{r}
+fdata3 = data.table::fread("../../data-raw/MayoRNASeq/Mayo_Proteomics_TC_proteinoutput.txt", sep = "\t")[, c(
+        "Protein IDs", "Peptide counts (all)",
+        "Peptide counts (razor+unique)", "Peptide counts (unique)",
+        "Fasta headers", "Number of proteins", "Peptides",
+        "Razor + unique peptides", "Unique peptides", "Sequence coverage [%]",
+        "Unique + razor sequence coverage [%]", "Unique sequence coverage [%]",
+        "Mol. weight [kDa]", "Sequence length", "Sequence lengths", "Q-value",
+        "Score"
+    )] %>%
+    as.data.frame()
+edata3 = data.table::fread(
+    "../../data-raw/MayoRNASeq/Mayo_Proteomics_TC_proteinoutput.txt", sep = "\t"
+) %>%
+    as.data.frame %>%
+    dplyr::select(starts_with("iBAQ")) %>% 
+    as.matrix()
+edata3 = edata3[, !grepl("b[0-9]_[em]gis", colnames(edata3))]
+edata3 = edata3[, !grepl("b$", colnames(edata3))]
+colnames(edata3) = gsub("a$", "", colnames(edata3))
+colnames(edata3) = gsub("^iBAQ mayo_", "", colnames(edata3))
+colnames(edata3) = gsub("_[0-9]+$", "", colnames(edata3))
+pdata3 = data.table::fread("../../data-raw/MayoRNASeq/Mayo_Proteomics_ID_key.csv", sep = ",") %>%
+    as.data.frame() %>% distinct() %>% 
+    filter(!is.na(RNA_SampleID) & RNA_SampleID %in% pdata2$SampleID) %>%
+    left_join(
+        dplyr::select(pdata2, SampleID, Diagnosis, Gender, AgeAtDeath, ApoE, PMI, Braak, Thal),
+        by = c("RNA_SampleID" = "SampleID")
+    )
+pdata3$Diagnosis = factor(pdata3$Diagnosis, levels = c("Control", "AD", "PSP"))
+edata3 = edata3[,pdata3$Samples_Simple]
+
+keep = grep("CON__|REV__", fdata3$`Protein IDs`, invert = TRUE)
+edata3 = edata3[keep,]
+fdata3 = fdata3[keep,]
+fdata3$uniprot = str_split_fixed(str_split_fixed(fdata3$`Protein IDs`, ";", n = 2)[,1], "\\|", n = 3)[,2]
+```
+
+```{r, eval = FALSE, include=FALSE}
+uniprot_id_mapping = function(ids, from = "ACC+ID", to = "ENSEMBL_ID"){
+    params = list(
+        from = from,
+        to = to,
+        format = "tab",
+        query = paste(ids, collapse = "+")
+    )
+    data = ""
+    for(i in seq_len(length(params))){
+        data = paste0(data, names(params)[i], "=", params[[i]])
+        if(i < length(params)){
+            data = paste0(data, "&")
+        }
+    }
+    data = URLencode(data)
+    r = httr::GET(paste0("https://www.uniprot.org/uploadlists/?", data))
+    cont = content(r, as = "parsed", encoding = "utf-8")
+    read.delim(text = cont, sep = "\t")
+}
+uniprot_mapping_wrapper = function(ids, from = "ACC+ID", to = "ENSEMBL_ID"){
+    ensembl_ids = NULL
+    i = 1
+    while(TRUE){
+        j = min(i + 499, length(ids))
+        res = uniprot_id_mapping(ids[i:j], from = from, to = to)
+        ensembl_ids = rbind(ensembl_ids, res)
+        i = j + 1
+        if(i >= length(ids)) break
+    }
+    return(ensembl_ids)
+}
+ensembl_ids = uniprot_mapping_wrapper(fdata3$uniprot, from = "ACC+ID", to = "ENSEMBL_ID")
+unmapped_uniprots = fdata3$uniprot[!fdata3$uniprot %in% ensembl_ids$From]
+unmapped_uniprots = str_split_fixed(unmapped_uniprots, "-", n = 2)[,1]
+ensembl_ids2 = uniprot_mapping_wrapper(unmapped_uniprots)
+enzembl_ids = rbind(ensembl_ids, ensembl_ids2)
+
+gene_names = uniprot_mapping_wrapper(fdata3$uniprot, from = "ACC+ID", to = "GENENAME")
+unmapped_uniprots = fdata3$uniprot[!fdata3$uniprot %in% gene_names$From] 
+unmapped_uniprots = str_split_fixed(unmapped_uniprots, "-", n = 2)[,1]
+gene_names2 = uniprot_mapping_wrapper(unmapped_uniprots, from = "ACC+ID", to = "GENENAME")
+gene_names = rbind(gene_names, gene_names2)
+
+entriz_ids = uniprot_mapping_wrapper(fdata3$uniprot, from = "ACC+ID", to = "P_ENTREZGENEID")
+unmapped_uniprots = fdata3$uniprot[!fdata3$uniprot %in% entriz_ids$From]
+unmapped_uniprots = str_split_fixed(unmapped_uniprots, "-", n = 2)[,1]
+entriz_ids2 = uniprot_mapping_wrapper(unmapped_uniprots, from = "ACC+ID", to = "P_ENTREZGENEID")
+entriz_ids = rbind(entriz_ids, entriz_ids2)
+
+gene_ids = list(enzembl_ids = enzembl_ids, gene_names = gene_names, entriz_ids = entriz_ids)
+
+saveRDS(gene_ids, file = "data/mayo_protein_ids.rds")
+```
+
+## differential expression
+
+The differnetial expression was again performed using `limma` comparing AD to control. Proteins that the max is smaller than 75000 and observed in fewer than 50 samples were removed from analysis. The p-value histogram is showing below.
+
+```{r}
+gene_ids = readRDS("data/mayo_protein_ids.rds")
+fdata3$ensambl = gene_ids$ensembl_ids$To[match(fdata3$uniprot, gene_ids$ensembl_ids$From)]
+fdata3$gene_name = gene_ids$gene_names$To[match(fdata3$uniprot, gene_ids$gene_names$From)]
+fdata3$entriz = gene_ids$entriz_ids$To[match(fdata3$uniprot, gene_ids$entriz_ids$From)]
+rownames(fdata3) = fdata3$uniprot
+rownames(edata3) = rownames(fdata3)
+
+# remove low occurance and abundant proteins
+#hist(apply(edata3, 1, function(x) sum(x != 0)))
+edata3 = edata3[rowMax(edata3) > 75000,]
+edata3 = edata3[apply(edata3, 1, function(x) sum(x != 0))>50,]
+fdata3 = fdata3[rownames(edata3),]
+
+# fill zeros
+edata3 = apply(edata3, 1, function(x){
+    x[x == 0] = min(x[x != 0])/4
+    return(x)
+}) %>% t
+
+design = model.matrix(~ Diagnosis, data = pdata3)
+fit3 = lmFit(log(edata3), design)
+fit3 = eBayes(fit3)
+tt3 = topTable(fit3, coef = "DiagnosisAD", number = Inf, sort.by = "none")
+```
+
+```{r}
+ggplot(tt3) +
+    geom_histogram(aes(x = P.Value), binwidth = 0.025, color = "white", fill = pal_lancet()(1)) +
+    theme_classic() +
+    theme(
+        plot.title = element_text(hjust = 0.5),
+        axis.text = element_text(color = "black")
+    )
+```
+
+## Pathway Mapping {.tabset}
+
+I then mapped proteins to the KEGG pathway and look for glycosylation related pathways. Pathway enrichment was tested in two methods. Method 1 uses the Fisher's exact test with a p-value cutoff of 0.1, and method 2 uses the GSEA (gene set enrichment analysis). Th number of proteins contained in the proteomics dataset is much smaller than the number of genes in the RNAseq data (5,020 vs 64,253), so the fewer pathways were successfully mapped. 
+
+### Method 1
+
+```{r}
+genelist = fdata3$entriz[tt3$P.Value < 0.1]
+genelist = genelist[!is.na(genelist)]
+background = unique(fdata3$entriz[!is.na(fdata3$entriz)])
+ke4 = enrichKEGG(genelist, organism = "hsa")
+ke4@result[grep("glycan", ke4@result$Description, ignore.case = TRUE),2:7]%>%
+    tibble::rownames_to_column("kegg_id") %>%
+    mutate(Description = glue::glue("<a href='https://www.genome.jp/dbget-bin/www_bget?pathway:{kegg_id}'>{Description}</a>"))%>%
+    datatable(escape = FALSE)%>%
+    formatSignif(columns = 5:7, digits = 3)
+```
+
+### Method 2
+
+```{r}
+genelist = tt3$logFC[!is.na(fdata3$entriz)]
+names(genelist) = fdata3$entriz[!is.na(fdata3$entriz)]
+genelist = sort(genelist, decreasing = TRUE)
+gseke = gseKEGG(genelist, pvalueCutoff = 1, minGSSize = 3, maxGSSize = 800)
+gseke@result[grep("glycan", gseke@result$Description, ignore.case = TRUE),1:8] %>%
+    mutate(Description = glue::glue("<a href='https://www.genome.jp/dbget-bin/www_bget?pathway:{ID}'>{Description}</a>"))%>%
+    datatable(escape = FALSE)%>%
+    formatSignif(columns = 4:8, digits = 3)
+```
+
+
+## Glycosylateion related proteins
+
+Overall, the differneces of glycosylation related proteins between AD and control are not as strong as the RNA expression. Besides that the proteomics data has much fewer proteins, protein abundances also have very large inter-individual variability. For instance, ALG11 wasn't detected in around half of the patients. The use of the data depandent analysis might be a significant reason for this. 
+
+### Differentail Expression
+
+```{r}
+tt3 %>% 
+    mutate(gene_name = fdata3$gene_name, entriz = fdata3$entriz, uniprot = fdata3$uniprot) %>%
+    filter(entriz %in% glyco_set) %>%
+    arrange(P.Value) %>%
+    mutate(gene_name = glue::glue('<a href="http://www.uniprot.org/uniprot/{uniprot}">{gene_name}</a>')) %>%
+    dplyr::select(gene_name, logFC, AveExpr, t, P.Value, adj.P.Val) %>%
+    datatable(escape = FALSE, rownames = FALSE) %>%
+    formatSignif(columns = 2:6, digits = 3)
+```
+
+### Boxplot {.tabset}
+
+```{r, include = FALSE, eval = FALSE}
+tt3 %>%
+    mutate(glyco_set = !is.na(fdata3$entriz) & fdata3$entriz %in% glyco_set) %>%
+    ggplot(aes(x = glyco_set, y = t)) +
+    geom_jitter(width = 0.1) +
+    geom_violin(aes(fill = glyco_set), alpha = 0.2) +
+    geom_boxplot(width = 0.1)
+```
+
+```{r}
+boxplot_protein = function(protein) {
+    uniprot = fdata3$uniprot[!is.na(fdata3$gene_name) & fdata3$gene_name == protein]
+    data.frame(
+        value = edata3[uniprot,],
+        Diagnosis = pdata3$Diagnosis
+    ) %>%
+        ggplot(aes(x = Diagnosis, y = value)) +
+        geom_jitter(width = 0.25) +
+        geom_boxplot(aes(fill = Diagnosis), alpha = 0.6, outlier.shape = NA) +
+        labs(y = protein) +
+        scale_fill_lancet() +
+        theme_classic() +
+        theme(
+            axis.text = element_text(color = "black"),
+            axis.text.y = element_text(angle = 90)
+        )
+}
+```
+
+#### HEXB
+
+```{r}
+boxplot_protein("HEXB")
+```
+
+#### ARSB
+
+```{r}
+boxplot_protein("ARSB")
+```
+
+#### B4GAT1
+
+```{r}
+boxplot_protein("B4GAT1")
+```
+
+#### DPM1
+
+```{r}
+boxplot_protein("DPM1")
+```
+
+#### DPM1
+
+```{r}
+boxplot_protein("SLC9A1")
+```
+
+#### POMGNT2
+
+```{r}
+boxplot_protein("POMGNT2")
+```
+
+#### ALG2
+
+```{r}
+boxplot_protein("ALG2")
+```
+
+#### ALG9
+
+```{r}
+boxplot_protein("ALG9")
+```
+
+#### ALG11
+
+```{r}
+boxplot_protein("ALG11")
+```
+
+
+# MSBB (Mt Saini Brain Bank)
+
+The MSBB dataset is different from the MayoRNAseq dataset, that it does not have labels for the desease group (AD or control). Instead, each individual has their own Braak, CERAD, and CDR scores.
+
+```{r}
+files = list.files("../../data-raw/MSBB/", "AMP-AD_MSBB_MSSM_BM_[0-9]+.normalized.*.tsv", full.names = TRUE)
+edata4 = lapply(files, function(f){
+    dat = data.table::fread(f, sep = "\t") %>% as.data.frame() %>% tibble::column_to_rownames("V1")
+    colnames(dat) = str_split_fixed(colnames(dat), "\\.", 2)[,2]
+    return(dat)
+}) %>% do.call(cbind, .) %>%
+    as.matrix()
+
+covariates = read.csv("../../data-raw/MSBB/MSBB_RNAseq_covariates_November2018Update.csv")
+#biospecimen = read.csv("../../data-raw/MSBB/MSBB_biospecimen_metadata.csv")
+individual = read.csv("../../data-raw/MSBB/msbb_individual_metadata.csv")
+pdata4 = covariates[match(colnames(edata4), covariates$sampleIdentifier),] %>%
+    dplyr::select(sampleIdentifier, BrodmannArea, individualIdentifier, batch, RIN, TotalReads, Mapped, rRNA.rate) %>%
+    dplyr::left_join(individual[,-c(2,3)], by = c("individualIdentifier" = "individualID"))
+```
+
+* Number of individuals with specific Braak score
+
+```{r}
+table(pdata4$Braak)
+```
+
+* Number of individuals with specific CERAD score
+
+```{r}
+table(pdata4$CERAD)
+```
+
+* Number of individuals with specific CDR score
+
+```{r}
+table(pdata4$CDR)
+```
+
+I think there are two ways that this dataset can be handled. One is that we devide all subjects in normal and AD according to Braak, CREAD, and/or CDR. Alternatively, we can treat either Braak, CERAD, or CDR score as a continuous variable and then fit linear regression models with each gene.
+
++ Logsdon 2019 https://doi.org/10.1101/510420
+
+CDR >= 1, Braak >= 4, and CERAD >= 2
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
