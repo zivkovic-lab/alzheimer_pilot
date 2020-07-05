@@ -82,7 +82,7 @@ ensembl = getBM(
     ),
     mart = ensembl
 )
-write.table(ensembl, file = "data/ensembl_anno.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+# write.table(ensembl, file = "data/ensembl_anno.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
 ```
 
 
@@ -848,7 +848,7 @@ uniprot_id_mapping = function(ids, from = "ACC+ID", to = "ENSEMBL_ID"){
     }
     data = URLencode(data)
     r = httr::GET(paste0("https://www.uniprot.org/uploadlists/?", data))
-    cont = content(r, as = "parsed", encoding = "utf-8")
+    cont = httr::content(r, as = "parsed", encoding = "utf-8")
     read.delim(text = cont, sep = "\t")
 }
 uniprot_mapping_wrapper = function(ids, from = "ACC+ID", to = "ENSEMBL_ID"){
@@ -987,8 +987,12 @@ tt3 %>%
 ```
 
 ```{r}
-boxplot_protein = function(protein) {
-    uniprot = fdata3$uniprot[!is.na(fdata3$gene_name) & fdata3$gene_name == protein]
+boxplot_protein = function(x, type = "symbol") {
+    if (type == "uniprot"){
+        uniprot = x
+    } else if (type == "symbol") {
+        uniprot = fdata3$uniprot[!is.na(fdata3$gene_name) & fdata3$gene_name == protein]   
+    }
     data.frame(
         value = edata3[uniprot,],
         Diagnosis = pdata3$Diagnosis
@@ -996,7 +1000,7 @@ boxplot_protein = function(protein) {
         ggplot(aes(x = Diagnosis, y = value)) +
         geom_jitter(width = 0.25) +
         geom_boxplot(aes(fill = Diagnosis), alpha = 0.6, outlier.shape = NA) +
-        labs(y = protein) +
+        labs(y = x) +
         scale_fill_lancet() +
         theme_classic() +
         theme(

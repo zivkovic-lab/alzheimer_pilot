@@ -95,6 +95,10 @@ PageEA = R6Class(
                                 "Barplot",
                                 plotlyOutput(ns("barplot"))
                             )
+                            # tabPanel(
+                            #     "Heatmap",
+                            #     plotlyOutput(ns("heatmap"))
+                            # )
                         )
                     )
                 )
@@ -152,6 +156,12 @@ PageEA = R6Class(
                         selected = input$table_rows_selected
                     )
             })
+            
+            # output$heatmap = renderPlotly({
+            #     .DATA$plot_enrichment_heatmap(
+            #         data_type = input$data_type
+            #     )
+            # })
             
             output$help_plot = renderUI({
                 if(input$test_type == "fet"){

@@ -15,6 +15,7 @@ Sidebar = R6Class(
                 sidebarMenu(
                     menuItem("Overview", tabName = "overview"),
                     menuItem("PCA Plot", tabName = "pca"),
+                    menuItem("Clustering", tabName = "cluster"),
                     menuItem("Glycan Barplot", tabName = "bar"),
                     menuItem("Linear Model", tabName = "lm"),
                     menuItem("Enrichment Analysis", tabName="ea"),

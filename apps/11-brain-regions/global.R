@@ -1,6 +1,6 @@
 pkgs=c("dplyr", "reshape2", "HTSet", "ggplot2", "plotly", "DT", "shiny", 
        "shinydashboard", "glue", "R6", "tibble", "ggsci", "shinyjqui", "limma",
-       "edgeR")
+       "edgeR", "factoextra")
 for(pkg in pkgs){
     suppressPackageStartupMessages(library(pkg, character.only=TRUE))
 }

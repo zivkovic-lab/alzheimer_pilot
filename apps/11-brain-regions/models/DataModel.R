@@ -22,17 +22,15 @@ DataModel = R6Class(
                 PC1 = pca$x[,1],
                 PC2 = pca$x[,2]
             ) %>%
+                cbind(data$pdata) %>%
                 mutate(
-                    region = data$pdata$region,
-                    sample = sampleNames(data),
-                    group  = data$pdata$group,
-                    age    = data$pdata$age
+                    sample = sampleNames(data)
                 )
             sdev = (pca$sdev ^ 2) / sum(pca$sdev ^ 2)
             p = ggplot(df, aes(x = PC1, y = PC2, group = group, region = region, age = age)) +
                 geom_point(aes_string(color = color)) +
                 labs(x = glue("PC1 [ {round(sdev[1] * 100, 2)}% ]"),
-                     y = glue("PC1 [ {round(sdev[2] * 100, 2)}% ]"))
+                     y = glue("PC2 [ {round(sdev[2] * 100, 2)}% ]"))
             ggplotly(p)
         },
         
@@ -345,6 +343,113 @@ DataModel = R6Class(
                 labs(x = NULL) +
                 coord_flip() +
                 guides(fill = guide_legend(title = NULL))
+        },
+        
+        plot_fet_heatmap = function(data_type, alternative, cutoff){
+            obj = self$data[[data_type]]
+            lm = self$lm[[data_type]]
+            regions = unique(obj$pdata$region)
+            alts = c("less", "greater")
+                
+            eas = lapply(regions, function(region){
+                greater = enrichment_test(
+                    obj, fit = lm[[region]], group = "subtype", test = "fet",
+                    alternative = "greater", p.cutoff = cutoff
+                )
+                less = enrichment_test(
+                    obj, fit = lm[[region]], group = "subtype", test = "fet",
+                    alternative = "less", p.cutoff = cutoff
+                )
+                lapply(seq_along(greater$pval), function(i){
+                    if(greater$pval[i] < 0.05 | less$pval[i] < 0.05) {
+                        if(greater$pval[i] < less$pval[i]){
+                            data.frame(
+                                x = greater$matrix[i,"x"], 
+                                pval = greater$pval[i],
+                                direction = "up",
+                                subtype = rownames(greater$matrix)[i]
+                            )
+                        } else {
+                            data.frame(
+                                x = -less$matrix[i,"x"], 
+                                pval = less$pval[i],
+                                direction = "down",
+                                subtype = rownames(greater$matrix)[i]
+                            )
+                        }
+                    } else {
+                        data.frame(
+                            x = 0, pval = NA, direction = "nosig",
+                            subtype = rownames(greater$matrix)[i]
+                        )
+                    }
+                }) %>%
+                    do.call(rbind,.) %>%
+                    mutate(region = region)
+            }) %>%
+                do.call(rbind, .)
+            max = max(abs(eas$x))
+            eas  %>%
+                ggplot() +
+                geom_tile(aes(region, subtype, fill = x)) +
+                scale_fill_gradientn(
+                    colours = colorRampPalette(brewer.pal(11, "RdBu"))(255),
+                    limits = c(-max, max)
+                ) +
+                theme_bw() +
+                theme(
+                    panel.grid = element_blank(),
+                    axis.text.x = element_text(angle = 45, hjust = 1)
+                )
+        },
+        
+        zscore_scale = function(data, margin) {
+            data = apply(data, margin, scale)
+            if(margin == 1) data = t(data)
+            return(data)
+        },
+        
+        abs_scale = function(data, margin) {
+            data = apply(data, margin, function(x){
+                max = max(x, na.rm = TRUE)
+                min = min(x, na.rm = TRUE)
+                (x - min) / (max - min) * 2
+            })
+            if(margin == 1) data = t(data)
+            return(data)
+        },
+        
+        transform_edata = function(edata, transform) {
+            dn = dimnames(edata)
+            if(transform == "z-score"){
+                edata = self$zscore_scale(edata, margin = 1)
+            } else if(transform == "abs-scale"){
+                edata = self$abs_scale(edata, margin = 1)
+            }
+            dimnames(edata) = dn
+            return(edata)
+        },
+        
+        plot_nbclust = function(data_type, transform, method, centers, algorithm) {
+            edata = self$data[[data_type]]$edata
+            edata = self$transform_edata(edata, transform)
+            p = fviz_nbclust(t(edata), kmeans, method, k.max = 10, algorithm = algorithm) +
+                geom_vline(xintercept = centers, linetype = "dashed", color = "red")
+            return(p)
+        },
+        
+        compute_clusters = function(data_type, method, ...){
+            if(method == "kmeans"){
+                groups = self$kmeans(data_type, ...)
+            }
+        },
+        
+        kmeans = function(data_type, transform, centers, algorithm, seed){
+            edata = self$data[[data_type]]$edata
+            edata = self$transform_edata(edata, transform)
+            set.seed(seed)
+            cl = kmeans(t(edata), centers = centers, algorithm = algorithm)
+            self$data[[data_type]]$pdata$cluster = factor(cl$cluster)
         }
     )
 )
