@@ -43,7 +43,7 @@ for(pkg in pkgs){
 
 ```{r}
 # loading data
-abs_abund = readRDS("../../data/case_study.rds")
+abs_abund0 = readRDS("../../data/case_study.rds")
 # set default ggplot theme
 theme_set(theme_bw())
 # set stringsAsFactors as FALSE by default
@@ -58,12 +58,12 @@ The excel sheet received `CaseStudy_AD_20191116_R&A.xlsx` has three sheets named
 
 ## 2. Zeros/missing values
 
-This datasets also contains some zeros/missing values. So again I added a prior of 1 to every value just for the purpose of letting the statistic analysis to preceed.
+This dataset also contains some zeros/missing values.
 
 ```{r, out.width="100%"}
 (data.frame(
-    feature = featureNames(abs_abund),
-    abs_abund = apply(abs_abund$conc_table, 1, function(row){sum(row == 0)})
+    feature = featureNames(abs_abund0),
+    abs_abund = apply(abs_abund0$conc_table, 1, function(row){sum(row == 0)})
 ) %>% 
     ggplot() + 
     geom_histogram(aes(x = abs_abund), color = "white", bins = 25, fill = "steelblue") +
@@ -71,22 +71,35 @@ This datasets also contains some zeros/missing values. So again I added a prior 
     ggplotly
 ```
 
-Here I transformed the absolute abundance data into relative abundance. A pior of 1 is added before the transforming.
-
 ```{r}
-abs_abund1 = transform_by_feature(abs_abund, function(x) x + 1)
-rel_abund = transform_by_sample(abs_abund1, function(x) x/sum(x) * 100)
+min.obs.freq = 0.75
+filter_by_missing = function(mset, region, cutoff){
+    samples = which(mset$sample_table$region == region)
+    mset = subset_samples(mset, sampleNames(mset)[samples])
+    mset = subset_features(mset, apply(mset$conc_table, 1, function(x) 
+        sum(x == 0) < cutoff * length(samples)
+    ))
+    mset
+}
+
+regions = unique(abs_abund0$sample_table$region) 
+abs_abund = lapply(regions, function(region) filter_by_missing(abs_abund0, region, min.obs.freq))
+names(abs_abund) = regions
+
+rel_abund = lapply(abs_abund, function(mset) 
+    transform_by_feature(mset, function(x) (x + 1)/sum(x+1)))
+names(rel_abund) = names(abs_abund)
 ```
 
 
 ## 3. Normality
 
-As shown below in the histogram of the z-scroe scaled median of each glycan, that it skews to the left, due to the zeros.
+As shown below in the histogram of the z-score scaled median of each glycan, that it skews to the left, due to the zeros.
 
 ```{r, out.width="100%"}
 (data.frame(
-    glycan = featureNames(abs_abund),
-    abs_abund = apply(abs_abund$conc_table, 1, function(x) median(scale(x )))
+    glycan = featureNames(abs_abund0),
+    abs_abund = apply(abs_abund0$conc_table, 1, function(x) median(scale(x )))
 ) %>% 
     ggplot(aes(x = abs_abund, y = ..density..)) +
     geom_histogram(color = "white", bins = 25, fill = "steelblue") +
@@ -98,8 +111,8 @@ Again, taking a log transformation makes it look better.
 
 ```{r, out.width="100%"}
 (data.frame(
-    glycan = featureNames(abs_abund),
-    abs_abund = apply(abs_abund$conc_table, 1, function(x) median(scale(log(x + 1))))
+    glycan = featureNames(abs_abund0),
+    abs_abund = apply(abs_abund0$conc_table, 1, function(x) median(scale(log(x + 1))))
 ) %>% 
     ggplot(aes(x = abs_abund, y = ..density..)) +
     geom_histogram(color = "white", bins = 25, fill = "steelblue") +
@@ -112,8 +125,8 @@ Again, taking a log transformation makes it look better.
 
 ## 4. Princicple component analysis
 
-```{r}
-pca1 = abs_abund1 %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+```{r, eval = FALSE, include = FALSE}
+pca1 = abs_abund %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
 pca2 = rel_abund  %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
 df = data.frame(pca1$x[,1:2], pca2$x[,1:2]) %>%
     `colnames<-`(c(
@@ -130,14 +143,14 @@ df = data.frame(pca1$x[,1:2], pca2$x[,1:2]) %>%
     dcast(sample + region + `data type` + group ~ PC)
 ```
 
-```{r, out.width="100%"}
+```{r, out.width="100%", eval = FALSE, include = FALSE}
 (ggplot(df) +
     geom_point(aes(x = PC1, y = PC2, color = group)) +
     facet_wrap(~`data type`, scales = "free")) %>%
     ggplotly
 ```
 
-```{r, out.width="100%"}
+```{r, out.width="100%", eval = FALSE, include = FALSE}
 (ggplot(df) +
     geom_point(aes(x = PC1, y = PC2, color = region)) +
     facet_wrap(~`data type`, scales = "free")) %>%
@@ -161,28 +174,43 @@ subset_pca(rel_abund, "MTC")
 ## 5. Linear Model
 
 ```{r}
-pdata = as(abs_abund$sample_table, "data.frame")
-pdata$interaction = interaction(pdata$region, pdata$group)
-design = model.matrix(~ interaction + 0, data = pdata)
-contrasts = paste0("interaction", unique(pdata$region), ".AD - interaction", unique(pdata$region), ".Control")
+lm = list()
 
-lm = lapply(list(abs_abund, rel_abund), function(mset){
-    d0 = DGEList(mset$conc_table)
-    d0 = calcNormFactors(d0)
-    #d0 = d0[apply(d0, 1, function(x) sum(x == 1) < 10),]
-    edata = voom(d0, design)
-    fit = lmFit(edata, design)
-    
-    tt = lapply(contrasts, function(contr){
-        contrast = makeContrasts(contrasts = contr, levels = colnames(coef(fit)))
-        res = contrasts.fit(fit, contrast)
-        res = eBayes(res)
-        topTable(res, number = Inf, sort.by = "none")
+fill_na = function(mset){
+    transform_by_feature(mset, function(x){
+        x[x == 0] = min(x[x != 0])/2
+        return(x)
     })
-    names(tt) = unique(pdata$region)
-    return(tt)
+}
+
+# abs_abund
+regions = names(abs_abund)
+lm$abs_abund = lapply(regions, function(reg){
+    mset = fill_na(abs_abund[[reg]])
+    edata = log(mset$conc_table)
+    pdata = as(mset$sample_table, "data.frame")
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
 })
-names(lm) = c("abs_abund", "rel_abund")
+names(lm$abs_abund) = regions
+
+# rel_abund
+lm$rel_abund = lapply(regions, function(reg){
+    mset = rel_abund[[reg]]
+    edata = log(mset$conc_table)
+    pdata = as(mset$sample_table, "data.frame")
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+})
+names(lm$rel_abund) = regions
 ```
 
 ```{r, echo = FALSE}
@@ -194,7 +222,7 @@ tags$div(
     ),
     tags$div(
         class="col-sm-6",
-        selectInput("region", label = "Brain Region", choices = unique(pdata$region))
+        selectInput("region", label = "Brain Region", choices = unique(regions))
     )
 )
 ```
@@ -202,8 +230,14 @@ tags$div(
 ```{r, echo = FALSE}
 dataTableOutput("dt")
 output$dt = renderDataTable({
+    if(input$`data-type` == "abs_abund"){
+        mset = abs_abund[[input$region]]
+    } else {
+        mset = rel_abund[[input$region]]
+    }
+    tt = lm[[input$`data-type`]][[input$region]]
     datatable(
-        cbind(abs_abund$feature_data, lm[[input$`data-type`]][[input$region]]),
+        cbind(mset$feature_data, tt),
         options = list(order = list(11, "asc")),
         selection = list(mode = "single", selected = 1)
     ) %>%
@@ -215,7 +249,7 @@ output$dt = renderDataTable({
 ```
 
 ```{r, echo = FALSE}
-downloadLink("downloadData", "Download Excel", class="btn btn-info btn-xs")
+downloadLink("downloadData", "Download Excel", class="btn btn-info btn-xs disabled")
 output$downloadData = downloadHandler(
     '11_brain_regions_lm_results.xlsx',
     content = function(file) {
@@ -229,7 +263,7 @@ output$downloadData = downloadHandler(
 export to excel
 </a>
 <div class="collapse" id="excel">
-```{r, eval = F}
+```{r, eval = F, include = FALSE}
 Sys.setenv(JAVA_HOME='/Library/Java/JavaVirtualMachines/jdk-11.0.1.jdk/Contents/Home')
 library(xlsx)
 wb = createWorkbook(type='xlsx')
@@ -327,15 +361,15 @@ renderPlotly({
 ```{r echo = FALSE}
 renderPlotly({
     if(input$`data-type` == "abs_abund"){
-        mset = abs_abund1
+        mset = abs_abund[[input$region]]
     } else {
-        mset = rel_abund
+        mset = rel_abund[[input$region]]
     }
     title = featureNames(mset)[input$dt_rows_selected]
     data.frame(
         value = mset$conc_table[input$dt_rows_selected,],
         group = mset$sample_table$group,
-        region = mset$sample_table$region
+        region = input$region
     ) %>%
         filter(region == input$region) %>%
         ggplot(aes(group, value)) +
