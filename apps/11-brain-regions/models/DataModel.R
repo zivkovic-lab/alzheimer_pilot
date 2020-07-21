@@ -155,9 +155,15 @@ DataModel = R6Class(
                     ".AD - interaction", unique(data$pdata$region),
                     ".NonAD"
                 )
-                d0 = DGEList(data$edata)
-                d0 = calcNormFactors(d0)
-                edata = voom(d0, design)
+                # d0 = DGEList(data$edata)
+                # d0 = calcNormFactors(d0)
+                # edata = voom(d0, design)
+                # fit = lmFit(edata, design)
+                
+                # Here I added a prior to all values to get ride of the zeros
+                edata = data$edata
+                edata = edata + min(edata[edata != 0] / 5)
+                edata = log(edata)
                 fit = lmFit(edata, design)
                 
                 tts = lapply(contrasts, function(contr){
@@ -245,6 +251,39 @@ DataModel = R6Class(
             }) %>%
                 do.call(rbind, .) %>%
                 `rownames<-`(categories)
+        },
+        
+        fet_with_region_data = function(data_type, region) {
+            data = self$data[[data_type]]
+            data$edata = data$edata + min(data$edata[data$edata != 0]) / 5
+            data$pdata$patient = paste0(data$pdata$group, data$pdata$age)
+            patients = unique(data$pdata$patient[data$pdata$region == region])
+            edata1 = sapply(patients, function(patient){
+                rowMeans(data$edata[,data$pdata$patient == patient])
+            })
+            edata2 = data$edata[,data$pdata$region == region]
+            pdata = data.frame(
+                row.names = c(colnames(edata1), colnames(edata2)),
+                region = c(rep("avg", ncol(edata1)), rep(region, ncol(edata2))),
+                patient = rep(patients, 2)
+            )
+            pdata$region = factor(pdata$region)
+            pdata$region = relevel(pdata$region, ref = "avg")
+            HTSet(edata = cbind(edata1,edata2), pdata = pdata, fdata = data$fdata)
+        },
+        
+        fet_with_region = function(data, alt, p.cutoff){
+            design = model.matrix(~ region + patient, data = data$pdata)
+            lm = model_fit(data, design, colnames(design)[2], engine = "limma", transform = log)
+            ea = enrichment_test(
+                object = data,
+                fit = lm,
+                group = "subtype",
+                test = "fet",
+                alternative = alt,
+                p.cutoff = p.cutoff
+            )
+            cbind(ea$matrix, pval = ea$pval, odds_ratio = ea$odds.ratio)
         },
         
         get_enrichment_table = function(){

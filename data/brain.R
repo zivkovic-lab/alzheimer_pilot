@@ -47,6 +47,8 @@ edata = rel_abund[,8:45] %>%
     `rownames<-`(rownames(fdata)) %>%
     `[`(,rownames(pdata))
 
+edata = edata + 0.5
+
 rel_abund = GlycomicsSet(
     conc_table = conc_table(edata),
     feature_data = feature_data(fdata),

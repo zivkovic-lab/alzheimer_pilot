@@ -33,18 +33,35 @@ body li {
 <hr>
 
 ```{r}
-pkgs=c("dplyr", "reshape2", "ggplot2", "tibble", "Metabase", "readxl")
+pkgs=c("dplyr", "reshape2", "Metabase", "ggplot2", "limma")
 for(pkg in pkgs){
     suppressPackageStartupMessages(library(pkg, character.only=TRUE))
 }
 ```
 
-## 1. Import data
+```{r}
+abs_abund = readRDS("../../data/case_study.rds")
+theme_set(theme_bw())
+```
+
+## Problem
+
+In the previous analysis, I found that the distribution of p-values is skewed. Usually it's because the data is not normalized. Here I looked more into the data.
+
+## library size
+
+Library size is the total number of target molecules in a sample. It is very important in sequencing-based methods such as RNAseq, which should be adjusted to avoid bias. In RNA-seq, the library size can be calculated as the sum of the reads mapped to each gene. However, in this dataset, adding up the intensities of each molecules does not necessarily reflect the library size, I did it any more just for exploratory purpose.
 
 ```{r}
-files = file.path("../raw_d")
-data = lapply(files, function(file) {
-    lapply(excel_sheets(file))
-})
+data.frame(
+    lib_size = colSums(abs_abund$conc_table),
+    sample_name = sampleNames(abs_abund)
+) %>%
+    mutate(sample_name = factor(sample_name, levels = sample_name)) %>%
+    ggplot() +
+    geom_col(aes(sample_name, lib_size)) +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5)
+    )
 ```
 
