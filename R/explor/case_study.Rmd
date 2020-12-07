@@ -382,8 +382,7 @@ renderPlotly({
 
 ## 6. Conclustion
 
-There doesn't seem to be a majore separation between either patient groups or brain regions according to the PCA plot. However, the linear regression result showed that, the relative abundance of 190 glycans in MTC were significantly different in patient groups, most of them are higher in the AD patiens.
-
+There doesn't seem to be a majore separation between either patient groups or brain regions according to the PCA plot. However, the linear regression result showed that, the relative abundance of 190 glycans in MTC were significantly different in patient groups, most of them are higher in the AD patiens. 
 
 ## 7. Session Information
 
