@@ -1,0 +1,1788 @@
+---
+title: "Large-Scale Serum Glycosylation Study"
+author: "Cynthia Tang"
+date: "`r strftime(Sys.time(), format = '%Y-%m-%d')`"
+output: 
+    html_document:
+        code_folding: show
+        toc: true
+        toc_float: true
+runtime: shiny
+---
+
+<style type="text/css">
+code {
+  font-family: monaco;
+}
+body p{
+    font-size: 12pt
+}
+body li {
+    font: 12pt
+}
+.datatables{
+    overflow: auto;
+    white-space: nowrap;
+}
+</style>
+
+<hr>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+options(repos = BiocManager::repositories())
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(tidyverse)
+library(limma)
+library(ggplot2)
+library(ggrepel)
+library(plotly)
+library(DT)
+library(shiny)
+library(HTSet)
+library(factoextra)
+library(lubridate)
+library(MASS)
+library(pheatmap)
+```
+
+```{r, loading data}
+data0 <- readRDS("data/serum.rds")
+uniprotBackup <- readRDS("data/uniprot_peptides.rds")
+# set default ggplot theme
+theme_set(theme_bw())
+# set stringsAsFactors as FALSE by default
+options(stringsAsFactors = FALSE)
+```
+
+# 1. Data Distribution {.tabset}
+
+We plotted the histogram to exam whether the original data satisify the model assumption - normal distribution.
+
+## Glycopeptide_original
+```{r}
+renderPlotly({
+  mset <- data$glycopeptide
+  (data.frame(
+    glycan = featureNames(mset),
+    conc = apply(mset$edata, 1, function(x) median(scale(x)))
+  ) %>% 
+      ggplot(aes(x = conc, y = ..density..)) +
+      geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+      geom_density() +
+      ylab("Response Normalized to peptide")
+  )
+})
+renderPlot({
+  mset <- data$glycopeptide
+  conc <- apply(mset$edata, 1, function(x) median(scale(x)))
+  qqnorm(conc, pch = 1, frame = FALSE)
+  qqline(conc, col = "steelblue", lwd = 2)
+})
+```
+
+## Glycopeptide_log
+```{r}
+renderPlotly({
+  mset <- data$glycopeptide
+  (data.frame(
+    glycan = featureNames(mset),
+    conc = apply(mset$edata, 1, function(x) median(scale(log(x))))
+  ) %>% 
+      ggplot(aes(x = conc, y = ..density..)) +
+      geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+      geom_density() +
+      ylab("Response Normalized to peptide")
+  )
+})
+renderPlot({
+  mset <- data$glycopeptide
+  conc <- apply(mset$edata, 1, function(x) median(scale(log(x))))
+  qqnorm(conc, pch = 1, frame = FALSE)
+  qqline(conc, col = "steelblue", lwd = 2)
+})
+```
+
+## Peptide(intensity)_original
+```{r}
+renderPlotly({
+  mset <- data$peptide_intensity
+  (data.frame(
+    glycan = featureNames(mset),
+    intensity = apply(mset$edata, 1, function(x) median(scale(x)))
+  ) %>% 
+      ggplot(aes(x = intensity, y = ..density..)) +
+      geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+      geom_density() +
+      ylab("Response Normalized to ISTD")
+  ) 
+})
+renderPlot({
+  mset <- data$peptide_intensity
+  intensity <- apply(mset$edata, 1, function(x) median(scale(x)))
+  qqnorm(intensity, pch = 1, frame = FALSE)
+  qqline(intensity, col = "steelblue", lwd = 2)
+})
+```
+
+## Peptide(intensity)_log
+```{r}
+renderPlotly({
+  mset <- data$peptide_intensity
+  intensity <- apply(mset$edata, 1, function(x) median(scale(log(x))))
+  (data.frame(
+    glycan = featureNames(mset),
+    intensity = intensity
+  ) %>% 
+      ggplot(aes(x = intensity, y = ..density..)) +
+      geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+      geom_density() +
+      ylab("Response Normalized to ISTD")
+  ) 
+})
+renderPlot({
+  mset <- data$peptide_intensity
+  intensity <- apply(mset$edata, 1, function(x) median(scale(log(x))))
+  qqnorm(intensity, pch = 1, frame = FALSE)
+  qqline(intensity, col = "steelblue", lwd = 2)
+})
+```
+
+# 2. Outlier Samples {.tabset}
+
+we cluster the samples to see if there are any obvious outliers.
+
+```{r include=FALSE}
+sampleTree_pep <- hclust(dist(t(log(data0$peptide$edata))), method = "average")
+plot(sampleTree_pep, main = "Peptide Sample clustering to detect outliers", sub="", 
+     xlab="", cex = 0.5)
+abline(h = 4, col = "red")
+peptide <- subset_samples(data0$peptide, !(rownames(data0$peptide$pdata) %in% c("A9", "B10")))
+```
+
+
+## Glycopeptides
+
+```{r}
+sampleTree_glyco <- hclust(dist(t(log(data0$glycopeptide$edata))), method = "average")
+plot(sampleTree_glyco, main = "Glycopeptide Sample clustering to detect outliers", sub="", 
+     xlab="", cex = 0.5)
+abline(h = 15.5, col = "red")
+glycopeptide <- subset_samples(data0$glycopeptide, !(rownames(data0$glycopeptide$pdata) %in% c("B10", "C13", "A67")))
+```
+B10, C13, A67 are outliers.
+
+## Peptide_intensity
+
+```{r}
+sampleTree_pepi <- hclust(dist(t(log(data0$peptide_intensity$edata))), method = "average")
+plot(sampleTree_pepi, main = "Peptide Intensity Sample clustering to detect outliers", sub="", 
+     xlab="", cex = 0.5)
+abline(h = 8, col = "red")
+peptide_intensity <- subset_samples(data0$peptide_intensity, !(rownames(data0$peptide_intensity$pdata) %in% c("A9", "C13")))
+```
+A9, C13 outliers.
+
+```{r}
+data <- list(peptide = peptide, glycopeptide = glycopeptide, peptide_intensity = peptide_intensity)
+for (type in names(data)) {
+  data[[type]]$pdata <- data[[type]]$pdata %>%
+    mutate(Draw_dt = Blood_Draw_Dt) %>%
+    mutate(
+      years = round(time_length(interval(Draw_dt, as.POSIXct("2020-11-11",format="%Y-%m-%d")), "years")),
+      days = round(as.POSIXct("2020-11-11",format="%Y-%m-%d")-Draw_dt)
+    )
+}
+```
+# 3. Primary Outcome: Normal VS AD  
+
+```{r echo=FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("data_type_pri", label = "Data Type", choices = c("glycopeptide", "peptide_intensity"))
+    ),
+    tags$div(
+      class="col-sm-6",
+      selectInput("transform_pri", label = "Transformation", choices = c("log", "none"))
+    )
+)
+```
+
+```{r DE_function, include=FALSE}
+calcDE_var <- function(datatype = "glycopeptide", formula = "~Dx_Group", coef = 3, transform = "log"){
+  model <- model.matrix(as.formula(formula), data = data[[datatype]]$pdata)
+  edata <- data[[datatype]]$edata[,rownames(model)]
+  if(transform == "log"){
+    edata <- log(edata)
+  } 
+  lmFit(edata, model) %>%
+    eBayes() %>%
+    topTable(coef = coef, number = Inf, sort.by = "none")
+}
+```
+
+In this study, 99 serum samples are from normal participants without the AD diagnosis, and 96 are from AD patients. The primary outcome consists of three parts:  
+1. Find the potential biomarker glycopeptides whose changes are associated with AD in serum.  
+2. Understand the effects of including age, sex, ethnicity, ApoE allele, BMI, storage age of samples.   
+3. Investigate the sex specific diagnosis effects on glycopeptides in serum.  
+
+## 3.1 Unadjusted Model  
+Unadjusted model means the linear model didn't adjust with any covariates. The results of unadjusted model:
+
+```{r}
+output$unadj_pri <- renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx", coef = 2, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("unadj_pri")
+```
+
+Volcano plot:  
+(due to limited space, only glycopeptides with P-value < 0.01 are labelled)
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx", coef = 2, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.01), aes(label=glyopeptide))
+})
+```
+
+Box plot:  
+Click the rows on the DE table above to see the boxplot for glycopeptides.
+
+```{r echo=FALSE}
+renderPlot({
+  print(input$unadj_pri_rows_selected)
+  data.frame(
+    Response = data[[input$data_type_pri]]$edata[input$unadj_pri_rows_selected,],
+    Diagnosis = data[[input$data_type_pri]]$pdata$SuperDx
+  ) %>%
+  ggplot(aes(x = Diagnosis, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis))+
+    labs(title = featureNames(data[[input$data_type_pri]])[input$unadj_pri_rows_selected])
+})
+```
+
+glycopepetides: we identified `r sum(calcDE_var("glycopeptide", "~SuperDx", coef = 2, "log")$P.Value<0.05)` glycopeptides with unadjusted linear model that can be potential AD biomarkers because these glycopepeptides changed with AD (P.Value<0.05).  
+
+## 3.2 Model Adjusted with One Covariate  
+The covariates in this study includes age, sex, ethnicity, ApoE allele, BMI, storage age of samples, the interaction between sex and diagnosis.  
+
+### 3.2.1 Age  
+The results from the linear model adjusted with age:
+
+```{r}
+output$age_pri <- renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+age", coef = 2, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("age_pri")
+```
+Volcano plot:  
+(due to limited space, only glycopeptides with P-value < 0.01 are labelled)
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx+age", coef = 2, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.01), aes(label=glyopeptide))
+})
+```
+General impacts of age on glycopeptides:
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+age", coef = 3, input$transform_pri) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Decreased as age increases", "Increased as age increases")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("steelblue", "red", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_text_repel(data=filter(tbl, abs(logFC)>0.02), aes(label=glyopeptide))
+})
+```
+
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  print(input$age_pri_rows_selected)
+  data.frame(
+    Response = data[[input$data_type_pri]]$edata[input$age_pri_rows_selected,],
+    Diagnosis = data[[input$data_type_pri]]$pdata$SuperDx,
+    Age = data[[input$data_type_pri]]$pdata$age
+  ) %>%
+  ggplot(aes(x = Age, y = Response))+
+    geom_point(aes(fill = Diagnosis), shape = 21)+
+    geom_smooth(method = "lm")+
+    labs(title = featureNames(data[[input$data_type_pri]])[input$age_pri_rows_selected])
+})
+```
+
+Glycopepetide: Age didn't have a huge general impact. `r sum(calcDE_var("glycopeptide", "~SuperDx+age", coef = 3, "log")$P.Value<0.05)` glycopeptides are affected by sex (P<0.05), but maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~SuperDx+age", coef = 3, "log")$logFC))`. We identified `r sum(calcDE_var("glycopeptide", "~SuperDx+age", coef = 2, "log")$P.Value<0.05)` glycopeptides when adjusted with age (P.Value<0.05).  
+
+### 3.2.2 Sex  
+
+The results from the linear model adjusted with sex:
+
+```{r}
+output$sex_pri <- renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+adc_gender", coef = 2, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("sex_pri")
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx+adc_gender", coef = 2, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+General impacts of sex on glycopeptides:
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+adc_gender", coef = 3, input$transform_pri) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Higher in male", "Higher in female")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("red", "steelblue", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_vline(xintercept = c(-0.2, 0.2)) +
+    geom_text_repel(data=filter(tbl, abs(logFC)>0.2&P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  print(input$sex_pri_rows_selected)
+  data.frame(
+    Response = data[[input$data_type_pri]]$edata[input$sex_pri_rows_selected,],
+    Diagnosis = data[[input$data_type_pri]]$pdata$SuperDx,
+    Sex = data[[input$data_type_pri]]$pdata$adc_gender
+  ) %>%
+  ggplot(aes(x = Sex, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis), shape = 21)+
+    labs(title = featureNames(data[[input$data_type_pri]])[input$sex_pri_rows_selected])
+})
+```
+
+Glycopepetide: `r sum(calcDE_var("glycopeptide", "~SuperDx+adc_gender", coef = 3, "log")$P.Value<0.05)` glycopeptides are affected by sex (P<0.05, logFC>0.2), suggesting that sex has a general impact on glycopepetide abundance in serum. We identified `r sum(calcDE_var("glycopeptide", "~SuperDx+adc_gender", coef = 2, "log")$P.Value<0.05)` glycopeptides when adjusted with sex (P.Value<0.05).  
+
+### 3.2.3 Ethnicity 
+
+The results from the linear model adjusted with ethnicity:
+
+```{r}
+replace <- which(data$glycopeptide$pdata$adc_ethnicity == "American Indian/Alaskan Native") 
+data$glycopeptide$pdata$adc_ethnicity2 <- data$glycopeptide$pdata$adc_ethnicity
+data$glycopeptide$pdata$adc_ethnicity2[replace] <- NA
+data$glycopeptide$pdata$adc_ethnicity2 <- droplevels(data$glycopeptide$pdata$adc_ethnicity2)
+renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+adc_ethnicity2", coef = 2, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx+adc_ethnicity2", coef = 2, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+General impact on glycopeptides:  
+```{r}
+output$eth_pri <- renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+adc_ethnicity2", coef = 3:4, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("eth_pri")
+```
+
+Specific effects: 
+
+```{r}
+renderPlot({
+  print(input$eth_pri_rows_selected)
+  data.frame(
+    Response = data[[input$data_type_pri]]$edata[input$eth_pri_rows_selected,],
+    Diagnosis = data[[input$data_type_pri]]$pdata$SuperDx,
+    Eth = data[[input$data_type_pri]]$pdata$adc_ethnicity2
+  ) %>%
+    filter(!is.na(Eth)) %>%
+  ggplot(aes(x = Eth, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis), shape = 21)+
+    labs(title = featureNames(data[[input$data_type_pri]])[input$eth_pri_rows_selected])
+})
+```
+
+Glycopepetide: `r sum(calcDE_var("glycopeptide", "~SuperDx+adc_ethnicity2", coef = 3:4, "log")$P.Value<0.05)` glycopeptides are affected by ethnicity (P<0.05). We identified `r sum(calcDE_var("glycopeptide", "~SuperDx+adc_ethnicity2", coef = 2, "log")$P.Value<0.05)` glycopeptides when adjusted with sex (P.Value<0.05). 
+
+### 3.2.4 ApoE allele  
+
+ApoE allele is coded by presence/absence of ApoE4.  
+The results from the linear model adjusted with ApoE:
+
+```{r}
+output$apoe_pri<- renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+apoe4", coef = 2, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("apoe_pri")
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx+apoe4", coef = 2, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+General impacts of sex on glycopeptides:
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+apoe4", coef = 3, input$transform_pri) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Higher with absence of e4", "Higher with presence of e4")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("steelblue", "red", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_vline(xintercept = c(-0.2, 0.2)) +
+    geom_text_repel(data=filter(tbl, abs(logFC)>0.2&P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+Specific effects: 
+
+```{r}
+renderPlot({
+  print(input$apoe_pri_rows_selected)
+  data.frame(
+    Response = data[[input$data_type_pri]]$edata[input$apoe_pri_rows_selected,],
+    Diagnosis = data[[input$data_type_pri]]$pdata$SuperDx,
+    ApoE4 = data[[input$data_type_pri]]$pdata$apoe4
+  ) %>%
+  ggplot(aes(x = ApoE4, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis), shape = 21)+
+    labs(title = featureNames(data[[input$data_type_pri]])[input$apoe_pri_rows_selected])
+})
+```
+
+Glycopepetide: `r sum(calcDE_var("glycopeptide", "~SuperDx+apoe", coef = 3, "log")$P.Value<0.05)` glycopeptides are affected by apoe4 presence (P<0.05, logFC>0.2). We identified `r sum(calcDE_var("glycopeptide", "~SuperDx+apoe", coef = 2, "log")$P.Value<0.05)` glycopeptides when adjusted with apoe4 presence (P.Value<0.05).  
+
+### 3.2.5 BMI  
+
+The results from the linear model adjusted with BMI:
+
+```{r}
+output$bmi_pri <- renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+bmi", coef = 2, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("bmi_pri")
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx+bmi", coef = 2, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+General impacts of bmi on glycopeptides:
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+bmi", coef = 3, input$transform_pri) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Decreased as age increases", "Increased as age increases")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("steelblue", "red", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_text_repel(data=filter(tbl, abs(logFC)>0.02&P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  print(input$bmi_pri_rows_selected)
+  data.frame(
+    Response = data[[input$data_type_pri]]$edata[input$bmi_pri_rows_selected,],
+    Diagnosis = data[[input$data_type_pri]]$pdata$SuperDx,
+    BMI = data[[input$data_type_pri]]$pdata$bmi
+  ) %>%
+  ggplot(aes(x = BMI, y = Response))+
+    geom_point(aes(fill = Diagnosis), shape = 21)+
+    geom_smooth(method = "lm")+
+    labs(title = featureNames(data[[input$data_type_pri]])[input$bmi_pri_rows_selected])
+})
+```
+
+Glycopepetide: BMI didn't have a huge general impact. `r sum(calcDE_var("glycopeptide", "~SuperDx+bmi", coef = 3, "log")$P.Value<0.05)` glycopeptides are affected by sex (P<0.05), but maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~SuperDx+bmi", coef = 3, "log")$logFC))`. We identified `r sum(calcDE_var("glycopeptide", "~SuperDx+bmi", coef = 2, "log")$P.Value<0.05)` glycopeptides when adjusted with bmi (P.Value<0.05).  
+
+### 3.2.6 Age of samples  
+
+The results from the linear model adjusted with the age of samples:
+
+```{r}
+output$years_pri <- renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+years", coef = 2, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("years_pri")
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx+years", coef = 2, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+General impacts of age of samples on glycopeptides:
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+years", coef = 3, input$transform_pri) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Decreased as stoage age increases", "Increased as storage age increases")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("steelblue", "red", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  print(input$years_pri_rows_selected)
+  data.frame(
+    Response = data[[input$data_type_pri]]$edata[input$years_pri_rows_selected,],
+    Diagnosis = data[[input$data_type_pri]]$pdata$SuperDx,
+    StorageYears = data[[input$data_type_pri]]$pdata$years
+  ) %>%
+  ggplot(aes(x = StorageYears, y = Response))+
+    geom_point(aes(fill = Diagnosis), shape = 21)+
+    geom_smooth(method = "lm")+
+    labs(title = featureNames(data[[input$data_type_pri]])[input$years_pri_rows_selected])
+})
+```
+
+Glycopepetide: `r sum(calcDE_var("glycopeptide", "~SuperDx+years", coef = 3, "log")$P.Value<0.05)` glycopeptides are affected by storage years (P<0.05), but maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~SuperDx+years", coef = 3, "log")$logFC))`. We identified `r sum(calcDE_var("glycopeptide", "~SuperDx+years", coef = 2, "log")$P.Value<0.05)` glycopeptides when adjusted with storage time (P.Value<0.05).  
+### 3.2.7 Interaction Between Sex and Diagnosis  
+
+The results from the linear model adjusted with diagnosis, sex interaction:
+
+```{r}
+output$sexDx_pri <- renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx*adc_gender", coef = 4, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("sexDx_pri")
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r} 
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx*adc_gender", coef = 4, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  print(input$sexDx_pri_rows_selected)
+  data.frame(
+    Response = data[[input$data_type_pri]]$edata[input$sexDx_pri_rows_selected,],
+    Diagnosis = data[[input$data_type_pri]]$pdata$SuperDx,
+    Sex = data[[input$data_type_pri]]$pdata$adc_gender
+  ) %>%
+  ggplot(aes(x = Sex, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis), shape = 21)+
+    labs(title = featureNames(data[[input$data_type_pri]])[input$sexDx_pri_rows_selected])
+})
+```
+
+Glycopepetide: We identified `r sum(calcDE_var("glycopeptide", "~SuperDx*adc_gender", coef = 4, "log")$P.Value<0.05)` glycopeptides with sex-specific difference associated with AD (P.Value<0.05).  
+
+### 3.2.8 Summary
+
+The number of glycopepdies changed in AD cases (P.Value<0.05 or adj.P.Val<0.05) when adjusted with each covariate:
+
+```{r}
+covariates <- c("age", "adc_gender", "adc_ethnicity", "apoe4", "bmi", "years")
+sigGlycopeptides <- lapply(covariates, function(x){
+  form <- paste0("~SuperDx+", x)
+  calcDE_var("glycopeptide", form, coef = 2, "log") %>%
+    filter(P.Value<0.05) %>%
+    rownames_to_column() %>%
+    mutate(covariate = x)
+})
+summary_Dx1 <- data.frame(
+  Covariate = covariates,
+  Sig_glycopeptide = sapply(sigGlycopeptides, nrow),
+  Adj_sig_glycopeptide = sapply(sigGlycopeptides, function(x)sum(x$adj.P.Val<0.05))
+)
+renderDT({summary_Dx1})
+```
+The number of glycopeptides affected by each covariate:
+
+```{r}
+impactGlycopeptides <- lapply(covariates, function(x){
+  form <- paste0("~SuperDx+", x)
+  if (x=="adc_ethnicity") {
+    calcDE_var("glycopeptide", form, coef = 3:4, "log") %>%
+      filter(P.Value<0.05) %>%
+      rownames_to_column() %>%
+      mutate(covariate = x)
+  } else {
+    calcDE_var("glycopeptide", form, coef = 3, "log") %>%
+      filter(P.Value<0.05) %>%
+      rownames_to_column() %>%
+      mutate(covariate = x)
+  }
+})
+summary_impact1 <- data.frame(
+  Covariate = covariates,
+  Impacted_glycopeptide = sapply(impactGlycopeptides, nrow),
+  Adj_Impacted_glycopeptide = sapply(impactGlycopeptides, function(x)sum(x$adj.P.Val<0.05))
+)
+renderDT({summary_impact1})
+```
+
+```{r echo=FALSE}
+covs <- c("adc_gender", "age", "adc_ethnicity", "apoe", "bmi", "years", "diabetes")
+# clinical diagnosis
+tbl_ad <- calcDE_var("glycopeptide", "~SuperDx", coef = 2)
+ad <- data.frame(
+  Name = rownames(tbl_ad)[tbl_ad$P.Value<0.05],
+  unadj = tbl_ad$logFC[tbl_ad$P.Value<0.05]
+)
+for (cov in covs) {
+  tbl_ad <- calcDE_var("glycopeptide", paste("~SuperDx", cov, sep = "+"), coef = 2)
+  ad <- data.frame(
+    Name = rownames(tbl_ad)[tbl_ad$P.Value<0.05],
+    covariate = tbl_ad$logFC[tbl_ad$P.Value<0.05]
+  ) %>% 
+    full_join(ad, ., by = "Name",suffix = c("", paste0(".", cov)))
+}
+tbl_ad_int <- calcDE_var("glycopeptide", "~SuperDx*adc_gender", coef = 4)
+ad <- data.frame(
+  Name = rownames(tbl_ad_int)[tbl_ad_int$P.Value<0.05],
+  Dx_Sex = tbl_ad_int$logFC[tbl_ad_int$P.Value<0.05]
+) %>% 
+  full_join(ad, ., by = "Name")
+ad <- dplyr::rename(ad, covariate.sex = covariate) %>%
+  dplyr::rename_with(~sub("covariate\\.", "", .))
+```
+
+```{r, fig.height=12}
+# Clinical Diagnosis
+ad %>%
+  column_to_rownames("Name") %>%
+  as.matrix() %>%
+  pheatmap(cluster_rows = FALSE, cluster_cols = FALSE, angle_col = "45")
+```
+
+## 3.3 Final Model
+
+Model without sex:diagnosis interaction:
+
+```{r}
+renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx+age+adc_gender+years+bmi", coef = 2, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r} 
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx+age+adc_gender+years+bmi", coef = 2, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+Model with sex:diagnosis interaction:
+
+```{r}
+renderDT({
+  tbl <- calcDE_var(input$data_type_pri, "~SuperDx*adc_gender+age+years+bmi", coef = 7, input$transform_pri)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r} 
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~SuperDx*adc_gender+age+years+bmi", coef = 7, input$transform_pri) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+# 4. Secondary Outcome: Normal VS Clinical Confirmed AD and Autopsy Confirmed AD 
+
+```{r echo=FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("data_type_sec", label = "Data Type", choices = c("glycopeptide", "peptide_intensity"))
+    ),
+    tags$div(
+      class="col-sm-6",
+      selectInput("transform_sec", label = "Transformation", choices = c("log", "none"))
+    ),
+        tags$div(
+        class="col-sm-6",
+        selectInput("coef_sec", label = "Comparison", choices = c("Normal VS Autopsy Confirmed" = 3, "Normal VS Clinical DX" = 2))
+    )
+)
+```
+
+As mentioned above, the study has 96 AD serum samples. These AD samples are either clinical confirmed (54 samples) or autopsy confirmed (42 samples). To explore whether there are any differences between clinical confirmed AD and autopsy confirmed AD, we brokdown AD group into two categories (clinical confirmed and autopsy confrmed) and compared each of them to serum samples in the normal group. The secondary outcome consists of three parts:  
+1. Find the potential biomarker glycopeptides whose changes are associated with clinical diagnosed AD and autopsy confirmed AD separately.  
+2. Understand the effects of including age, sex, ethnicity, ApoE allele, BMI, storage age of samples on clinical diagnosed AD and autopsy confirmed AD.  
+3. Investigate the sex specific effects on glycopeptides in clinical diagnosed AD and autopsy confirmed AD groups.  
+
+## 4.1 Unadjusted Model  
+Unadjusted model means the linear model didn't adjust with any covariates. The results of unadjusted model:
+
+```{r}
+output$unadj_sec <- renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group", coef = as.numeric(input$coef_sec), input$transform_sec)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("unadj_sec")
+```
+
+Volcano plot:  
+(due to limited space, only glycopeptides with P-value < 0.01, logFC>0.2or<-0.2 are labelled)
+
+```{r echo=FALSE}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_pri, "~Dx_Group", coef = as.numeric(input$coef_sec), input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.01&abs(logFC)>0.2), aes(label=glyopeptide))
+})
+```
+
+```{r echo=FALSE}
+renderPlot({
+  data.frame(
+    Response = data[[input$data_type_sec]]$edata[input$unadj_sec_rows_selected,],
+    Diagnosis = data[[input$data_type_sec]]$pdata$Dx_Group
+  ) %>%
+  ggplot(aes(x = Diagnosis, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis))+
+    labs(title = featureNames(data[[input$data_type_sec]])[input$unadj_sec_rows_selected])
+})
+```
+
+## 4.2 Model Adjusted with One Covariate  
+The covariates in this study includes age, sex, ethnicity, ApoE allele, BMI, storage age of samples, the interaction between sex and diagnosis.  
+
+### 4.2.1 Age  
+Age-gender distribution:
+
+```{r}
+data$glycopeptide$pdata %>%
+  ggplot() +
+  geom_histogram(aes(age, fill = adc_gender), alpha = 0.5, binwidth = 5, position = "identity")
+```
+
+The results from the linear model adjusted with age:
+
+```{r}
+output$age_sec <- renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+age", coef = as.numeric(input$coef_sec), input$transform_sec)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("age_sec")
+```
+Volcano plot:
+(due to limited space, only glycopeptides with P-value < 0.01 are labelled)
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+age", coef = as.numeric(input$coef_sec), input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.01), aes(label=glyopeptide))
+})
+```
+
+We identified `r sum(calcDE_var("glycopeptide", "~Dx_Group+age", coef = 2, "log")$P.Value<0.05)` glycopeptides changed in clinical diagnosed AD when adjusted with age (P.Value<0.05), and `r sum(calcDE_var("glycopeptide", "~Dx_Group+age", coef = 3, "log")$P.Value<0.05)` glycopeptides changed in autopsy confirmed AD.  
+General impacts of age on glycopeptides:
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+age", coef = 4, input$transform_sec) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Decreased as age increases", "Increased as age increases")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("steelblue", "red", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_text_repel(data=filter(tbl, abs(logFC)>0.02|P.Value<0.001), aes(label=glyopeptide))
+})
+```
+`r sum(calcDE_var("glycopeptide", "~Dx_Group+age", coef = 4, "log")$P.Value<0.05)` glycopeptides are affected by age (P<0.05), and maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~Dx_Group+age", coef = 4, "log")$logFC))`.  
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  data.frame(
+    Response = data[[input$data_type_sec]]$edata[input$age_sec_rows_selected,],
+    Diagnosis = data[[input$data_type_sec]]$pdata$Dx_Group,
+    Age = data[[input$data_type_sec]]$pdata$age
+  ) %>%
+  ggplot(aes(x = Age, y = Response))+
+    geom_point(aes(fill = Diagnosis), shape = 21)+
+    geom_smooth(method = "lm")+
+    labs(title = featureNames(data[[input$data_type_sec]])[input$age_sec_rows_selected])
+})
+```
+
+### 4.2.2 Sex
+
+Gender ratio in AD and Ctrl:
+
+```{r} 
+table(data$glycopeptide$pdata$SuperDx, data$glycopeptide$pdata$adc_gender)
+```
+
+The results from the linear model adjusted with sex: 
+
+```{r} 
+output$sex_sec <- renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+adc_gender", coef = as.numeric(input$coef_sec), input$transform_sec)
+  datatable(tbl, selection = list(mode = "single", selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("sex_sec")
+```
+Volcano plot:  
+(due to limited space, only glycopeptides with P-value < 0.01, logFC>0.2or<-0.2 are labelled)  
+```{r} 
+renderPlot({
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+adc_gender", coef = as.numeric(input$coef_sec), input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.01&abs(logFC)>0.2), aes(label=glyopeptide))
+})
+```  
+We identified `r sum(calcDE_var("glycopeptide", "~Dx_Group+adc_gender", coef = 2, "log")$P.Value<0.05)` glycopeptides changed with clinical diagnosed AD when adjusted with sex (P.Value<0.05), and `r sum(calcDE_var("glycopeptide", "~Dx_Group+adc_gender", coef = 3, "log")$P.Value<0.05)` glycopeptides changed with autopsy confirmed AD.  
+General impacts of sex on glycopeptides:   
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+adc_gender", coef = 4, input$transform_sec) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Higher in male", "Higher in female")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("red", "steelblue", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_text_repel(data=filter(tbl, P.Value<0.01), aes(label=glyopeptide))
+})
+``` 
+
+`r sum(calcDE_var("glycopeptide", "~Dx_Group+adc_gender", coef = 4, "log")$P.Value<0.05)` glycopeptides are affected by sex (P<0.05), and maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~Dx_Group+adc_gender", coef = 4, "log")$logFC))`.  
+Glycopeptide-specific impacts: 
+
+```{r echo=FALSE} 
+renderPlot({
+  data.frame(
+    Response = data[[input$data_type_sec]]$edata[input$sex_sec_rows_selected,],
+    Sex = data[[input$data_type_sec]]$pdata$adc_gender,
+    Diagnosis = data[[input$data_type_sec]]$pdata$Dx_Group
+  ) %>%
+  ggplot(aes(x = Sex, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis))+
+    labs(title = featureNames(data[[input$data_type_sec]])[input$sex_sec_rows_selected])
+})
+```
+
+### 4.2.3 Ethnicity
+
+Remove the American Indian/Alaskan Native because this category has only one subject.
+
+The results from the linear model adjusted with ethnicity: 
+
+```{r} 
+renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+adc_ethnicity2", coef = as.numeric(input$coef_sec), input$transform_sec)
+  datatable(tbl, selection = list(mode = "single", selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+```
+Volcano plot:   
+
+```{r} 
+renderPlot({
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+adc_ethnicity2", coef = as.numeric(input$coef_sec), input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.01), aes(label=glyopeptide))
+})
+```  
+We identified `r sum(calcDE_var("glycopeptide", "~Dx_Group+adc_ethnicity2", coef = 2, "log")$P.Value<0.05)` glycopeptides changed with clinical diagnosed AD when adjusted with ethnicity (P.Value<0.05), and `r sum(calcDE_var("glycopeptide", "~Dx_Group+adc_ethnicity2", coef = 3, "log")$P.Value<0.05)` glycopeptides changed with autopsy confirmed AD.  
+General impacts of ethnicity on glycopeptides:   
+
+```{r}
+output$eth_sec <- renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+adc_ethnicity2", coef = 4:5, input$transform_sec)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("eth_sec")
+``` 
+
+`r sum(calcDE_var("glycopeptide", "~Dx_Group+adc_ethnicity2", coef = 4, "log")$P.Value<0.05)` glycopeptides are affected by ethnicity (P<0.05), and maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~Dx_Group+adc_ethnicity2", coef = 4, "log")$logFC))`.  
+```{r}
+table(data$glycopeptide$pdata$adc_ethnicity, data$glycopeptide$pdata$Dx_Group)
+```
+
+Glycopeptide-specific impacts: 
+
+```{r echo=FALSE} 
+renderPlot({
+  data.frame(
+    Response = data[[input$data_type_sec]]$edata[input$eth_sec_rows_selected,],
+    Ethnicity = data[[input$data_type_sec]]$pdata$adc_ethnicity2,
+    Diagnosis = data[[input$data_type_sec]]$pdata$Dx_Group
+  ) %>%
+    filter(!is.na(Ethnicity)) %>%
+    ggplot(aes(x = Ethnicity, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis))+
+    labs(title = featureNames(data[[input$data_type_sec]])[input$eth_sec_rows_selected])
+})
+```
+
+### 4.2.4 ApoE4
+
+ApoE allele is coded by presence/absence of ApoE4.  
+The results from the linear model adjusted with ApoE:
+
+```{r} 
+output$apoe_sec <- renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+apoe4", coef = as.numeric(input$coef_sec), input$transform_sec)
+  datatable(tbl, selection = list(mode = "single", selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("apoe_sec")
+```
+Volcano plot:   
+
+```{r} 
+renderPlot({
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+apoe4", coef = as.numeric(input$coef_sec), input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.01), aes(label=glyopeptide))
+})
+```  
+We identified `r sum(calcDE_var("glycopeptide", "~Dx_Group+apoe4", coef = 2, "log")$P.Value<0.05)` glycopeptides changed with clinical diagnosed AD when adjusted with apoe4 presence (P.Value<0.05), and `r sum(calcDE_var("glycopeptide", "~Dx_Group+apoe4", coef = 3, "log")$P.Value<0.05)` glycopeptides changed with autopsy confirmed AD.  
+General impacts of ApoE4 on glycopeptides:   
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+apoe4", coef = 4, input$transform_sec) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Higher with absence of e4", "Higher with presence of e4")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("steelblue", "red", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+``` 
+
+`r sum(calcDE_var("glycopeptide", "~Dx_Group+apoe4", coef = 4, "log")$P.Value<0.05)` glycopeptides are affected by apoe4 presence (P<0.05), and maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~Dx_Group+apoe4", coef = 4, "log")$logFC))`.  
+Glycopeptide-specific impacts: 
+
+```{r echo=FALSE} 
+renderPlot({
+  data.frame(
+    Response = data[[input$data_type_sec]]$edata[input$apoe_sec_rows_selected,],
+    ApoE4 = data[[input$data_type_sec]]$pdata$apoe4,
+    Diagnosis = data[[input$data_type_sec]]$pdata$Dx_Group
+  ) %>%
+  ggplot(aes(x = ApoE4, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis))+
+    labs(title = featureNames(data[[input$data_type_sec]])[input$apoe_sec_rows_selected])
+})
+```
+
+### 4.2.5 BMI
+
+The results from the linear model adjusted with BMI:
+
+```{r}
+output$bmi_sec <- renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+bmi", coef = as.numeric(input$coef_sec), input$transform_sec)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("bmi_sec")
+```
+Volcano plot:  
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+bmi", coef = as.numeric(input$coef_sec), input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.01), aes(label=glyopeptide))
+})
+```
+
+We identified `r sum(calcDE_var("glycopeptide", "~Dx_Group+bmi", coef = 2, "log")$P.Value<0.05)` glycopeptides changed in clinical diagnosed AD when adjusted with BMI (P.Value<0.05), and `r sum(calcDE_var("glycopeptide", "~Dx_Group+bmi", coef = 3, "log")$P.Value<0.05)` glycopeptides changed in autopsy confirmed AD.  
+General impacts of bmi on glycopeptides:
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+bmi", coef = 4, input$transform_sec) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Decreased as bmi increases", "Increased as bmi increases")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("steelblue", "red", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_text_repel(data=filter(tbl, P.Value<0.05&abs(logFC)>0.02), aes(label=glyopeptide))
+})
+```
+`r sum(calcDE_var("glycopeptide", "~Dx_Group+bmi", coef = 4, "log")$P.Value<0.05)` glycopeptides are affected by BMI (P<0.05), and maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~Dx_Group+bmi", coef = 4, "log")$logFC))`.  
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  data.frame(
+    Response = data[[input$data_type_sec]]$edata[input$bmi_sec_rows_selected,],
+    Diagnosis = data[[input$data_type_sec]]$pdata$Dx_Group,
+    BMI = data[[input$data_type_sec]]$pdata$bmi
+  ) %>%
+  ggplot(aes(x = BMI, y = Response))+
+    geom_point(aes(fill = Diagnosis), shape = 21)+
+    geom_smooth(method = "lm")+
+    labs(title = featureNames(data[[input$data_type_sec]])[input$bmi_sec_rows_selected])
+})
+```
+
+### 4.2.6 The Sample Storage Time in Years
+
+StorageTime-gender distribution:
+
+```{r echo=FALSE}
+data$glycopeptide$pdata %>%
+  ggplot() +
+  geom_histogram(aes(years, fill = adc_gender), alpha = 0.5, binwidth = 1, position = "identity")
+```
+
+```{r echo=FALSE}
+data$glycopeptide$pdata %>%
+  ggplot() +
+  geom_histogram(aes(years, fill = Dx_Group), alpha = 0.5, binwidth = 1, position = "identity")
+```
+
+The results from the linear model adjusted with the sample storage time:
+
+```{r}
+output$years_sec <- renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+years", coef = as.numeric(input$coef_sec), input$transform_sec)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("years_sec")
+```
+Volcano plot:  
+
+```{r}
+renderPlot({
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+years", coef = as.numeric(input$coef_sec), input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+We identified `r sum(calcDE_var("glycopeptide", "~Dx_Group+years", coef = 2, "log")$P.Value<0.05)` glycopeptides changed in clinical diagnosed AD when adjusted with the age of samples (P.Value<0.05), and `r sum(calcDE_var("glycopeptide", "~Dx_Group+years", coef = 3, "log")$P.Value<0.05)` glycopeptides changed in autopsy confirmed AD.  
+General impacts of the sample storage time on glycopeptides:
+
+```{r}
+renderPlot({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+years", coef = 4, input$transform_sec) %>%
+    mutate(glyopeptide = rownames(.),
+           sig = ifelse(P.Value>=0.05, "Not sig", ifelse(logFC<0, "Decreased as storage time increases", "Increased as storage increases")))
+  ggplot(tbl, aes(logFC, -log(P.Value)))+
+    geom_point(aes(fill = sig), shape = 21, size = 2) +
+    scale_fill_manual(values=c("steelblue", "red", "grey")) +
+    geom_hline(yintercept = -log(0.05)) +
+    geom_text_repel(data=filter(tbl, abs(logFC)>0.02|P.Value<0.001), aes(label=glyopeptide))
+})
+```
+`r sum(calcDE_var("glycopeptide", "~Dx_Group+years", coef = 4, "log")$P.Value<0.05)` glycopeptides are affected by sample storage time (P<0.05), and maxium log fold change is `r max(abs(calcDE_var("glycopeptide", "~Dx_Group+years", coef = 4, "log")$logFC))`.  
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  data.frame(
+    Response = data[[input$data_type_sec]]$edata[input$years_sec_rows_selected,],
+    Diagnosis = data[[input$data_type_sec]]$pdata$Dx_Group,
+    StoageYears = data[[input$data_type_sec]]$pdata$years
+  ) %>%
+  ggplot(aes(x = StoageYears, y = Response))+
+    geom_point(aes(fill = Diagnosis), shape = 21)+
+    geom_smooth(method = "lm")+
+    labs(title = featureNames(data[[input$data_type_sec]])[input$years_sec_rows_selected])
+})
+```
+
+### 4.2.7 Interaction Between Sex and Diagnosis  
+
+The results from the linear model adjusted with diagnosis, sex interaction:
+
+```{r echo=FALSE}
+tags$div(
+    tags$div(
+        class="col-sm-6",
+        selectInput("coef_inter", label = "Comparison", choices = c("AD Dx:Sex" = "5:6", "(Clinical,F-Clinical,M)-(Normal,F-Normal,M)" = 5, "(Autopsy,F-Autopsy,M)-(Normal,F-Normal,M)" = 6))
+    )
+)
+```
+
+```{r}
+output$sexDx_sec <- renderDT({
+  if (input$coef_inter == "5:6") {
+    coef = 5:6
+  } else {
+    coef = as.numeric(input$coef_inter)
+  }
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group*adc_gender", coef = coef, input$transform_sec)
+  datatable(tbl, selection = list(mode = "single", selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+DTOutput("sexDx_sec")
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r} 
+renderPlot({
+  if (input$coef_inter == "5:6") {
+    NULL
+  } else {
+    coef = as.numeric(input$coef_inter)
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group*adc_gender", coef = coef, input$transform_sec) %>%
+      mutate(glyopeptide = rownames(.),
+             sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+      geom_point(aes(fill = sig), shape = 21, size = 2) +
+      scale_fill_manual(values=c("grey", "red")) +
+      geom_hline(yintercept = -log(0.05)) +
+      geom_text_repel(data=filter(tbl, P.Value<0.05&abs(logFC)>0.2), aes(label=glyopeptide))
+  }
+})
+```
+
+Glycopeptide-specific impacts: 
+
+```{r}
+renderPlot({
+  data.frame(
+    Response = data[[input$data_type_sec]]$edata[input$sexDx_sec_rows_selected,],
+    Diagnosis = data[[input$data_type_sec]]$pdata$Dx_Group,
+    Sex = data[[input$data_type_sec]]$pdata$adc_gender
+  ) %>%
+  ggplot(aes(x = Sex, y = Response))+
+    geom_boxplot(aes(fill = Diagnosis), shape = 21)+
+    labs(title = featureNames(data[[input$data_type_sec]])[input$sexDx_sec_rows_selected])
+})
+```
+
+Glycopepetide: We identified `r sum(calcDE_var("glycopeptide", "~Dx_Group*adc_gender", coef = 5, "log")$P.Value<0.05)` glycopeptides with sex-specific difference associated with clinical diagnosed AD (P.Value<0.05), and `r sum(calcDE_var("glycopeptide", "~Dx_Group*adc_gender", coef = 6, "log")$P.Value<0.05)` glycopeptides associated with autopsy confirmed AD.  
+
+### 4.2.8 Summary
+
+Missing values:
+
+```{r}
+cov_missing <- c("age", "adc_gender", "adc_ethnicity", "apoe4", "bmi", "years")
+sapply(cov_missing, function(x)sum(is.na(data$glycopeptide$pdata[,x])))
+```
+
+The number of glycopepdies changed in AD cases (P.Value<0.05 or adj.P.Val<0.05) when adjusted with each covariate:
+
+Clinical Diagnosed AD:  
+```{r}
+covariates <- c("age", "adc_gender", "adc_ethnicity", "apoe4", "bmi", "years")
+sigGlycopeptides2 <- lapply(covariates, function(x){
+  form <- paste0("~Dx_Group+", x)
+  calcDE_var("glycopeptide", form, coef = 2, "log") %>%
+    filter(P.Value<0.05) %>%
+    rownames_to_column() %>%
+    mutate(covariate = x)
+})
+summary_Dx2 <- data.frame(
+  Covariate = covariates,
+  Sig_glycopeptide = sapply(sigGlycopeptides2, nrow),
+  Adj_sig_glycopeptide = sapply(sigGlycopeptides2, function(x)sum(x$adj.P.Val<0.05))
+)
+renderDT({summary_Dx2})
+```
+
+Autopsy Confirmed AD:  
+```{r}
+sigGlycopeptides3 <- lapply(covariates, function(x){
+  form <- paste0("~Dx_Group+", x)
+  calcDE_var("glycopeptide", form, coef = 3, "log") %>%
+    filter(P.Value<0.05) %>%
+    rownames_to_column() %>%
+    mutate(covariate = x)
+})
+summary_Dx3 <- data.frame(
+  Covariate = covariates,
+  Sig_glycopeptide = sapply(sigGlycopeptides3, nrow),
+  Adj_sig_glycopeptide = sapply(sigGlycopeptides3, function(x)sum(x$adj.P.Val<0.05))
+)
+renderDT({summary_Dx3})
+```
+
+The number of glycopeptides affected by each covariate:
+
+```{r}
+impactGlycopeptides2 <- lapply(covariates, function(x){
+  form <- paste0("~Dx_Group+", x)
+  if (x=="adc_ethnicity") {
+    calcDE_var("glycopeptide", form, coef = 4:5, "log") %>%
+      filter(P.Value<0.05) %>%
+      rownames_to_column() %>%
+      mutate(covariate = x)
+  } else {
+    calcDE_var("glycopeptide", form, coef = 4, "log") %>%
+      filter(P.Value<0.05) %>%
+      rownames_to_column() %>%
+      mutate(covariate = x)
+  }
+})
+summary_impact2 <- data.frame(
+  Covariate = covariates,
+  Impacted_glycopeptide = sapply(impactGlycopeptides2, nrow),
+  Adj_Impacted_glycopeptide = sapply(impactGlycopeptides2, function(x)sum(x$adj.P.Val<0.05))
+)
+renderDT({summary_impact2})
+```
+
+Significant glycopeptides:
+```{r echo=FALSE}
+covs <- c("adc_gender", "age", "adc_ethnicity", "apoe", "bmi", "years", "diabetes")
+# clinical diagnosis
+tbl_clinical <- calcDE_var("glycopeptide", "~Dx_Group", coef = 2)
+clinical <- data.frame(
+  Name = rownames(tbl_clinical)[tbl_clinical$P.Value<0.05],
+  unadj = tbl_clinical$logFC[tbl_clinical$P.Value<0.05]
+)
+for (cov in covs) {
+  tbl_clinical <- calcDE_var("glycopeptide", paste("~Dx_Group", cov, sep = "+"), coef = 2)
+  clinical <- data.frame(
+    Name = rownames(tbl_clinical)[tbl_clinical$P.Value<0.05],
+    covariate = tbl_clinical$logFC[tbl_clinical$P.Value<0.05]
+  ) %>% 
+    full_join(clinical, ., by = "Name",suffix = c("", paste0(".", cov)))
+}
+tbl_clinical_int <- calcDE_var("glycopeptide", "~Dx_Group*adc_gender", coef = 5)
+clinical <- data.frame(
+  Name = rownames(tbl_clinical_int)[tbl_clinical_int$P.Value<0.05],
+  Dx_Sex = tbl_clinical_int$logFC[tbl_clinical_int$P.Value<0.05]
+) %>% 
+  full_join(clinical, ., by = "Name")
+clinical <- dplyr::rename(clinical, covariate.sex = covariate) %>%
+  dplyr::rename_with(~sub("covariate\\.", "", .))
+
+# autopsy confirmed
+tbl_autopsy <- calcDE_var("glycopeptide", "~Dx_Group", coef = 3)
+autopsy <- data.frame(
+  Name = rownames(tbl_autopsy)[tbl_autopsy$P.Value<0.05],
+  unadj = sign(tbl_autopsy$logFC)[tbl_autopsy$P.Value<0.05]
+)
+for (cov in covs) {
+  tbl_autopsy <- calcDE_var("glycopeptide", paste("~Dx_Group", cov, sep = "+"), coef = 3)
+  autopsy <- data.frame(
+    Name = rownames(tbl_autopsy)[tbl_autopsy$P.Value<0.05],
+    covariate = tbl_autopsy$logFC[tbl_autopsy$P.Value<0.05]
+  ) %>% 
+    full_join(autopsy, ., by = "Name",suffix = c("", paste0(".", cov)))
+}
+tbl_autopsy_int <- calcDE_var("glycopeptide", "~Dx_Group*adc_gender", coef = 6)
+autopsy <- data.frame(
+  Name = rownames(tbl_autopsy_int)[tbl_autopsy_int$P.Value<0.05],
+  Dx_Sex = sign(tbl_autopsy_int$logFC)[tbl_autopsy_int$P.Value<0.05]
+) %>% 
+  full_join(autopsy, ., by = "Name")
+autopsy <- dplyr::rename(autopsy, covariate.sex = covariate) %>%
+  dplyr::rename_with(~sub("covariate\\.", "", .))
+```
+
+```{r heatmaps, fig.height=12}
+# Clinical Diagnosis
+clinical %>%
+  column_to_rownames("Name") %>%
+  as.matrix() %>%
+  pheatmap(cluster_rows = FALSE, cluster_cols = FALSE, angle_col = "45")
+# Autopsy Confirmed
+autopsy %>%
+  column_to_rownames("Name") %>%
+  as.matrix() %>%
+  pheatmap(cluster_rows = FALSE, cluster_cols = FALSE, angle_col = "45")
+
+```
+
+## 4.3 Final Model
+
+AD consists of clinical disgnosis only and autopsy confirmed.  
+Model without sex:diagnosis interaction:
+
+```{r}
+renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+age+adc_gender+years+bmi", coef = as.numeric(input$coef_sec), input$transform_sec)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r} 
+renderPlot({
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group+age+adc_gender+years+bmi", coef = as.numeric(input$coef_sec), input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+Model with sex:diagnosis interaction:
+
+```{r}
+renderDT({
+  tbl <- calcDE_var(input$data_type_sec, "~Dx_Group*adc_gender+age+years+bmi", coef = as.numeric(input$coef_sec)+6, input$transform_sec)
+  datatable(tbl, selection = list(mode = 'single', selected = 1)) %>%
+    formatSignif(columns = 1:ncol(tbl))
+})
+```
+
+Volcano plot:  
+(Glycopeptides with P-value < 0.05 are labelled)
+
+```{r} 
+renderPlot({
+    tbl <- calcDE_var(input$data_type_sec, "~Dx_Group*adc_gender+age+years+bmi", coef = as.numeric(input$coef_sec)+6, input$transform_sec) %>%
+        mutate(glyopeptide = rownames(.),
+               sig = ifelse(P.Value<0.05, "P.Value<0.05", "Not sig"))
+    ggplot(tbl, aes(logFC, -log(P.Value)))+
+        geom_point(aes(fill = sig), shape = 21, size = 2) +
+        scale_fill_manual(values=c("grey", "red")) +
+        geom_hline(yintercept = -log(0.05)) +
+        geom_text_repel(data=filter(tbl, P.Value<0.05), aes(label=glyopeptide))
+})
+```
+
+AD Clinical Dx Only/AD Autopsy Confirmed VS Normal
+
+```{r eval=FALSE, include=FALSE}
+tabsetPanel(
+  tabPanel("Volcano Plot", plotlyOutput("vol2")),
+  tabPanel("Box Plot", plotlyOutput("box2")),
+  tabPanel("PCA", plotOutput("pca2"))
+)
+```
+
+```{r eval=FALSE, include=FALSE}
+output$vol2 <- renderPlotly({
+  coef = as.integer(input$coef2)
+  calcDE2(input$data_type2, coef, input$transform2)%>%
+    rownames_to_column("feature") %>%
+    ggplot(aes(x = logFC, y = -log(P.Value))) +
+    geom_point(aes(feature = feature), color = "grey10", alpha = 0.6) +
+    geom_hline(yintercept = -log(0.05), color = "red", linetype = "dashed") 
+  
+})
+
+# identical(rownames(lm$peptide$autospy), featureNames(data$peptide))
+output$box2 <- renderPlotly({
+  label2factor <- c("8" = "Dx_Group", "9" = "Dx_Group", "2" = "age", "3" = "adc_gender", "4" = "adc_ethnicity_umb", "5" = "apoe4", "6" = "bmi", "7" = "years")
+  factor <- label2factor[input$coef2]
+  group <- data[[input$data_type2]]$pdata[[factor]]
+  ylab <- ifelse(input$data_type2 == "peptide_intensity", "Response Normalized to ISTD", "Response Normalized to peptide")
+  df <- data.frame(
+    conc = data[[input$data_type2]]$edata[input$lm2_rows_selected,],
+    group = group,
+    sampleID = sampleNames(data[[input$data_type2]])
+  )
+  if (class(group)=="factor") {
+    ggplot(df, aes(x = group, y = conc)) +
+      geom_boxplot(aes(fill = group)) +
+      geom_point(aes(sampleID = sampleID), shape = 21, fill = "grey", color = "black", size = 2) +
+      labs(title = featureNames(data[[input$data_type2]])[input$lm2_rows_selected], y = ylab)
+  } else {
+    ggplot(df, aes(x = group, y = conc)) +
+      geom_point(aes(sampleID = sampleID), shape = 21, fill = "grey", color = "black", size = 2) +
+      geom_smooth(method = "lm", se = FALSE)+
+      labs(title = featureNames(data[[input$data_type2]])[input$lm2_rows_selected], y = ylab)
+  }
+})
+output$pca2 <- renderPlot({
+  data.pca <- data[[input$data_type2]]$edata %>%
+    t() %>%
+    prcomp(center = TRUE, scale = TRUE)
+  fviz_eig(data.pca)
+  group <- data[[input$data_type2]]$pdata$Dx_Group
+  colors <- c("red", "darkgreen", "steelblue")
+  fviz_pca_ind(data.pca,
+               col.ind = group, # color by groups
+               palette = colors,
+               addEllipses = TRUE, # Concentration ellipses
+               ellipse.type = "confidence",
+               legend.title = "Groups",
+               repel = FALSE
+  )
+})
+
+```
+
+# GO Enrichment Analysis {.tabset}
+
+## Peptides
+
+We did the GO enrichment analysis based on the proteins/peptides (in intensity) involved in glycosylation. All GO terms showned below were up-regulated (all proteins/peptides with the differential expression test p-value < 0.05 were increased in AD cases).
+
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("ontology", label = "GO term", choices = c("Biological process" = "BP", "Cellular Component" = "CC", "Molecular Function" = "MF"))
+    )
+)
+```
+
+
+```{r eval=FALSE}
+# From protein to uniprot id
+DE_peptide <- calcDE("peptide_intensity") # coef = AD, log transformed
+symbol <- str_split_fixed(rownames(DE_peptide), "-", n=2)[,1]
+symbol[match("CO4A&CO4B", symbol)] <- "CO4A"
+symbol <- toupper(symbol)
+uniprot <- mapIds(
+  x = org.Hs.eg.db,
+  keys = symbol,
+  column = "UNIPROT",
+  keytype = "SYMBOL",
+  multiVals = "first"
+)
+names(uniprotBackup)[1] <- "myName"
+tofill <- uniprotBackup$Entry
+names(tofill) <- sub("_HUMAN", "", uniprotBackup$myName)
+for (i in seq_along(uniprot)) {
+  if (is.na(uniprot[i])) {
+    uniprot[i] <- tofill[names(uniprot)[i]]
+  }
+}
+sym2uniprot <- data.frame(
+  symbol = symbol,
+  uniprot = uniprot
+)
+# From uniprot id to Ensembl id
+entrez <- mapIds(
+  x = org.Hs.eg.db,
+  keys = sym2uniprot$uniprot,
+  column = "ENTREZID",
+  keytype = "UNIPROT",
+  multiVals = "first"
+) %>%
+  unlist()
+uniprot2ent <- data.frame(
+  uniprot = names(entrez)[!is.na(entrez)],
+  entrez = entrez[!is.na(entrez)]
+)
+sym2ent <- left_join(sym2uniprot, uniprot2ent, by = "uniprot")
+sym2ent$logFC <- DE_peptide$logFC
+sym2ent$PValue <- DE_peptide$P.Value
+
+GOresult <- list(BP = NULL, CC = NULL, MF = NULL)
+for (ontology in names(GOresult)) {
+  # Select genes with PValue >= 0.05
+  genes <- sym2ent %>%
+    dplyr::filter(PValue <= 0.05)
+  GOresult[[ontology]] <- enrichGO(
+    gene = genes$entrez,
+    # universe = sym2ent$entrez,
+    OrgDb = org.Hs.eg.db,
+    ont = ontology,
+    pAdjustMethod = "BH"
+  )
+}
+# saveRDS(GOresult, "data/serum_GOresult.rds")
+```
+
+```{r echo=FALSE}
+GOresult <- readRDS("data/serum_GOresult.rds")
+renderDT({
+  datatable(as.data.frame(GOresult[[input$ontology]]), rownames = FALSE) %>%
+    formatSignif(5:7)
+})
+```
+
+## Glycopepetides  
+We did the GO enrichment analysis based on the glycopeptides. GO enrichment analysis were based on up-regulated glycopeptides or down-regulated glycopeptides or both.
+
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("ontology2", label = "GO term", choices = c("Biological process" = "BP", "Cellular Component" = "CC", "Molecular Function" = "MF"))
+    ),
+    tags$div(
+      class="col-sm-6",
+      selectInput("direction", label = "Enrichment Direction", choices = c("Up-regulated" = "up", "Down-regulated" = "down"))
+    )
+)
+```
+
+```{r eval=FALSE}
+DE_glycopeptide <- calcDE("glycopeptide") # coef = AD, log transformed
+# From protein to uniprot id
+symbol2 <- str_split_fixed(rownames(DE_glycopeptide), "-", n=2)[,1]
+symbol2[match("CO4A&CO4B", symbol2)] <- "CO4A"
+symbol2 <- toupper(symbol2)
+sym22ent <- left_join(data.frame(symbol = symbol2), distinct(sym2ent[,1:3]), by = "symbol")
+sym22ent$logFC <- DE_glycopeptide$logFC
+sym22ent$PValue <- DE_glycopeptide$P.Value
+
+GOresult2 <- list(BP = NULL, CC = NULL, MF = NULL)
+for (ontology in names(GOresult2)) {
+  # Select genes with PValue >= 0.05
+  genes2 <- sym22ent %>%
+    dplyr::filter(PValue <= 0.05)
+  genes2_up <- genes2 %>%
+    dplyr::filter(logFC > 0)
+  GOresult2[[ontology]]$up <- enrichGO(
+    gene = genes2_up$entrez,
+    # universe = sym2ent$entrez,
+    OrgDb = org.Hs.eg.db,
+    ont = ontology,
+    pAdjustMethod = "BH"
+  )
+  genes2_down <- genes2 %>%
+    dplyr::filter(logFC < 0)
+  GOresult2[[ontology]]$down <- enrichGO(
+    gene = genes2_down$entrez,
+    # universe = sym2ent$entrez,
+    OrgDb = org.Hs.eg.db,
+    ont = ontology,
+    pAdjustMethod = "BH"
+  )
+}
+# saveRDS(GOresult2, "data/serum_GOresult_glyco.rds")
+```
+
+```{r echo=FALSE}
+GOresult2 <- readRDS("data/serum_GOresult_glyco.rds")
+renderDT({
+  datatable(as.data.frame(GOresult2[[input$ontology2]][[input$direction]]), rownames = FALSE) %>%
+    formatSignif(5:7)
+})
+```
+
+# Grouping Analysis
+
+## Subtypes
+
+We summed up glancans in each category and fit the linear model. Expression data were log-transformed.
+
+```{r}
+subtype <- subset_features(data$glycopeptide, data$glycopeptide$fdata$subtype != "NG") %>%
+  summarize_feature("subtype")
+edata <- log(subtype$edata)
+# edata <- subtype$edata
+pdata <- subtype$pdata
+design <- model.matrix(~SuperDx+age+adc_gender+adc_ethnicity+apoe+bmi+days, data = pdata)
+lm_subtype <- lmFit(edata[,rownames(design)], design) %>% 
+  eBayes() %>%
+  topTable(coef = "SuperDxAD", number = Inf, sort.by = "none")
+```
+
+```{r, echo=FALSE}
+renderDT({
+  datatable(lm_subtype) %>% formatSignif(1:6)
+})
+df_subtype <- subtype$edata %>%
+  as.data.frame() %>%
+  rownames_to_column("subtype") %>%
+  pivot_longer(cols = !subtype, values_to = "value", names_to = "subject") %>%
+  left_join(rownames_to_column(subtype$pdata, "subject")[,c("subject", "SuperDx")], by = "subject")
+  
+renderPlot({
+  ggplot(df_subtype, aes(subtype, value))+
+    geom_boxplot(aes(fill = SuperDx))+
+    geom_point(aes(group = SuperDx), 
+               position = position_dodge(width=0.75),
+               alpha = 0.3)+
+    labs(title = "Subtype Analysis", x = "", y = "Response Normalized to peptide") +
+    guides(fill = guide_legend(title = "Diagnosis"))
+})
+```
+

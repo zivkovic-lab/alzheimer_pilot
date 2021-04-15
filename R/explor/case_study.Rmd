@@ -7,7 +7,7 @@ output:
         code_folding: show
         toc: true
         toc_float: true
-runtime: shiny
+runtime: "shiny"
 ---
 
 <style type="text/css">
@@ -32,22 +32,42 @@ body li {
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
-pkgs=c("dplyr", "reshape2", "tibble", "tidyr", "Metabase", "ggplot2", "plotly", "DT",
-       "limma", "edgeR", "shiny")
-for(pkg in pkgs){
-    suppressPackageStartupMessages(library(pkg, character.only=TRUE))
-}
+```{r, message=FALSE, warning=FALSE}
+options(repos = BiocManager::repositories())
+library(tidyverse)
+library(reshape2)
+library(HTSet)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(limma)
+library(edgeR)
+library(shiny)
 ```
 
 
 ```{r}
 # loading data
-abs_abund0 = readRDS("../../data/case_study.rds")
+abs_abund0 = readRDS("data/case_study2.rds")$abs_raw
+abs_abund_mgs <- readRDS("data/case_study2.rds")$abs_mgs
+
 # set default ggplot theme
 theme_set(theme_bw())
 # set stringsAsFactors as FALSE by default
 options(stringsAsFactors = FALSE)
+```
+
+```{r, echo = FALSE}
+# tags$div(
+#     class = "row",
+#     tags$div(
+#         class="col-sm-6",
+#         selectInput("input-data-type", label = "Data Type", choices = c("raw", "mgtissues"))
+#     )
+# )
+# abs_abund0 <- reactive({
+#   if(input$`input-data-type` == "raw"){abs_abund_raw}else{abs_abund_mgs}
+# })
 ```
 
 <hr>
@@ -60,64 +80,131 @@ The excel sheet received `CaseStudy_AD_20191116_R&A.xlsx` has three sheets named
 
 This dataset also contains some zeros/missing values.
 
-```{r, out.width="100%"}
-(data.frame(
+```{r}
+  (data.frame(
     feature = featureNames(abs_abund0),
-    abs_abund = apply(abs_abund0$conc_table, 1, function(row){sum(row == 0)})
+    abs_abund = apply(abs_abund0$edata, 1, function(row){sum(row == 0)})
 ) %>% 
     ggplot() + 
     geom_histogram(aes(x = abs_abund), color = "white", bins = 25, fill = "steelblue") +
     labs(x = "number of zeros")) %>%
     ggplotly
+
 ```
+
+For each brain regions, we filtered glycans by reponse intensity: Glycans with > 0 intensity in 50% of samples and in at leat 3 samples from each group were used for further analysis.  
+Relative abundance were also calculated with the sum of selected glycans as the denominator in each brain region.
 
 ```{r}
-min.obs.freq = 0.75
+min.obs.freq = 0.50
+# filter_by_missing = function(mset, region, cutoff){
+#     samples = which(mset$pdata$region == region)
+#     mset = subset_samples(mset, sampleNames(mset)[samples])
+#     mset = subset_features(mset, apply(mset$edata, 1, function(x) 
+#         sum(x != 0) > cutoff * length(samples)
+#     ))
+#     mset
+# }
 filter_by_missing = function(mset, region, cutoff){
-    samples = which(mset$sample_table$region == region)
-    mset = subset_samples(mset, sampleNames(mset)[samples])
-    mset = subset_features(mset, apply(mset$conc_table, 1, function(x) 
-        sum(x == 0) < cutoff * length(samples)
+    samples_con <- which(mset$pdata$region == region & mset$pdata$group == "Control")
+    mset_con = subset_samples(mset, sampleNames(mset)[samples_con])
+    mset_con = subset_features(mset_con, apply(mset_con$edata, 1, function(x) 
+        sum(x != 0) > 3
     ))
+    samples_AD <- which(mset$pdata$region == region & mset$pdata$group == "AD")
+    mset_AD = subset_samples(mset, sampleNames(mset)[samples_AD])
+    mset_AD = subset_features(mset_AD, apply(mset_AD$edata, 1, function(x) 
+        sum(x != 0) > 3
+    ))
+    features <- intersect(featureNames(mset_con), featureNames(mset_AD))
+    samples = which(mset$pdata$region == region)
+    mset <- subset_samples(mset, sampleNames(mset)[samples])
+    mset <- subset_features(mset, apply(mset$edata, 1, function(x)
+      sum(x != 0) > cutoff * length(samples)
+    ))
+    mset <- subset_features(mset, featureNames(mset) %in% features)
     mset
 }
-
-regions = unique(abs_abund0$sample_table$region) 
+regions = unique(abs_abund0$pdata$region) 
 abs_abund = lapply(regions, function(region) filter_by_missing(abs_abund0, region, min.obs.freq))
 names(abs_abund) = regions
-
+# regions = unique(abs_abund0$pdata$region) 
+# abs_abund = lapply(regions, function(region) filter_by_missing(abs_abund0, region, min.obs.freq))
+# names(abs_abund) = regions
 rel_abund = lapply(abs_abund, function(mset) 
-    transform_by_feature(mset, function(x) (x + 1)/sum(x+1)))
+  transform_by_sample(mset, function(x) (x + 1)/sum(x+1)))
 names(rel_abund) = names(abs_abund)
-```
 
+```
 
 ## 3. Normality
 
-As shown below in the histogram of the z-score scaled median of each glycan, that it skews to the left, due to the zeros.
+As shown below in the histogram of the z score scaled median of each glycan, it skews to the left due to the zeros. The z score scaled median was used to pick a representative point from each glycan. These histograms helped to check if glycan data satisfied the linear model assumption (normal distribution).
 
-```{r, out.width="100%"}
-(data.frame(
-    glycan = featureNames(abs_abund0),
-    abs_abund = apply(abs_abund0$conc_table, 1, function(x) median(scale(x )))
-) %>% 
-    ggplot(aes(x = abs_abund, y = ..density..)) +
-    geom_histogram(color = "white", bins = 25, fill = "steelblue") +
-    geom_density()) %>%
-    ggplotly
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("data-type_hist", label = "Data Type", choices = c("abs_abund", "rel_abund"))
+    ),
+    tags$div(
+        class="col-sm-6",
+        selectInput("region_hist", label = "Brain Region", choices = c("LCBC", "MTC", "LPFC"))
+    )
+)
 ```
 
-Again, taking a log transformation makes it look better.
 
-```{r, out.width="100%"}
-(data.frame(
-    glycan = featureNames(abs_abund0),
-    abs_abund = apply(abs_abund0$conc_table, 1, function(x) median(scale(log(x + 1))))
-) %>% 
+```{r}
+output$hist <- renderPlotly({
+  if (input$`data-type_hist` == "abs_abund") {
+    mset <- abs_abund
+  } else {
+    mset <- rel_abund
+  }
+  (data.frame(
+    glycan = featureNames(mset[[input$region_hist]]),
+    abs_abund = apply(mset[[input$region_hist]]$edata, 1, function(x) median(scale(x)))
+  ) %>% 
     ggplot(aes(x = abs_abund, y = ..density..)) +
     geom_histogram(color = "white", bins = 25, fill = "steelblue") +
-    geom_density()) %>%
+    geom_density()+
+    labs(x = input$`data-type-hist`)) %>%
     ggplotly
+})
+plotlyOutput("hist")
+```
+
+Again, taking a log transformation makes it look better for absolute abundance, but not for relative abundance.
+
+```{r}
+output$hist_log <- renderPlotly({
+  if (input$`data-type_hist` == "abs_abund") {
+    mset <- abs_abund
+  } else {
+    mset <- rel_abund
+  }
+  (data.frame(
+    glycan = featureNames(mset[[input$region_hist]]),
+    abs_abund = apply(mset[[input$region_hist]]$edata, 1, function(x) median(scale(log(x+1))))
+  ) %>% 
+    ggplot(aes(x = abs_abund, y = ..density..)) +
+    geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+    geom_density()+
+    labs(x = input$`data-type-hist`)) %>%
+    ggplotly
+})
+
+# (data.frame(
+#     glycan = featureNames(abs_abund0),
+#     abs_abund = apply(abs_abund0$conc_table, 1, function(x) median(scale(log(x + 1))))
+# ) %>% 
+#     ggplot(aes(x = abs_abund, y = ..density..)) +
+#     geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+#     geom_density()) %>%
+#     ggplotly
+plotlyOutput("hist_log")
 ```
 
 
@@ -173,22 +260,22 @@ subset_pca(rel_abund, "MTC")
 
 ## 5. Linear Model
 
-```{r}
-lm = list()
+Fit the linear model for each brain region with log-transformed absolute abundance and relative abundance.
 
+```{r}
 fill_na = function(mset){
     transform_by_feature(mset, function(x){
         x[x == 0] = min(x[x != 0])/2
         return(x)
     })
 }
-
+lm = list()
 # abs_abund
 regions = names(abs_abund)
 lm$abs_abund = lapply(regions, function(reg){
     mset = fill_na(abs_abund[[reg]])
-    edata = log(mset$conc_table)
-    pdata = as(mset$sample_table, "data.frame")
+    edata = log(mset$edata)
+    pdata = mset$pdata
     pdata$group = factor(pdata$group)
     pdata$group = relevel(pdata$group, "Control")
     design = model.matrix(~group, data = pdata)
@@ -201,8 +288,8 @@ names(lm$abs_abund) = regions
 # rel_abund
 lm$rel_abund = lapply(regions, function(reg){
     mset = rel_abund[[reg]]
-    edata = log(mset$conc_table)
-    pdata = as(mset$sample_table, "data.frame")
+    edata = log(mset$edata)
+    pdata = mset$pdata
     pdata$group = factor(pdata$group)
     pdata$group = relevel(pdata$group, "Control")
     design = model.matrix(~group, data = pdata)
@@ -211,6 +298,8 @@ lm$rel_abund = lapply(regions, function(reg){
     topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
 })
 names(lm$rel_abund) = regions
+
+
 ```
 
 ```{r, echo = FALSE}
@@ -222,7 +311,7 @@ tags$div(
     ),
     tags$div(
         class="col-sm-6",
-        selectInput("region", label = "Brain Region", choices = unique(regions))
+        selectInput("region", label = "Brain Region", choices = c("LCBC", "MTC", "LPFC"))
     )
 )
 ```
@@ -233,11 +322,11 @@ output$dt = renderDataTable({
     if(input$`data-type` == "abs_abund"){
         mset = abs_abund[[input$region]]
     } else {
-        mset = rel_abund[[input$region]]
+        mset = abs_abund[[input$region]]
     }
     tt = lm[[input$`data-type`]][[input$region]]
     datatable(
-        cbind(mset$feature_data, tt),
+        cbind(mset$fdata, tt),
         options = list(order = list(11, "asc")),
         selection = list(mode = "single", selected = 1)
     ) %>%
@@ -251,7 +340,7 @@ output$dt = renderDataTable({
 ```{r, echo = FALSE}
 downloadLink("downloadData", "Download Excel", class="btn btn-info btn-xs disabled")
 output$downloadData = downloadHandler(
-    '11_brain_regions_lm_results.xlsx',
+    'case_study_lm_results.xlsx.xlsx',
     content = function(file) {
         file.copy('case_study_lm_results.xlsx', file)
     },
@@ -363,12 +452,12 @@ renderPlotly({
     if(input$`data-type` == "abs_abund"){
         mset = abs_abund[[input$region]]
     } else {
-        mset = rel_abund[[input$region]]
+        mset = abs_abund[[input$region]]
     }
     title = featureNames(mset)[input$dt_rows_selected]
     data.frame(
-        value = mset$conc_table[input$dt_rows_selected,],
-        group = mset$sample_table$group,
+        value = mset$edata[input$dt_rows_selected,],
+        group = mset$pdata$group,
         region = input$region
     ) %>%
         filter(region == input$region) %>%

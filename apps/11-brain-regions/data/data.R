@@ -1,6 +1,6 @@
 setwd(dirname(parent.frame(2)$ofile))
 
-load("../../../data/brain.rda")
+load("data/brain.rda")
 
 rel_abund = HTSet::HTSet(
     edata = as(data$rel_abund$conc_table, "matrix"),

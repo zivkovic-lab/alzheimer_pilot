@@ -194,7 +194,7 @@ FormulaPanel = R6Class(
             }, error = function(e){
                 return(e)
             })
-            if(is(f, "error")){
+            if('error' %in% class(f)){
                 return(FALSE)
             } else if(length(f) != 2 & as.character(f[[1]]) != "~"){
                 return(FALSE)

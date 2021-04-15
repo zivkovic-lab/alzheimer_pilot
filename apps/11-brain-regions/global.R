@@ -1,9 +1,24 @@
-pkgs=c("dplyr", "reshape2", "HTSet", "ggplot2", "plotly", "DT", "shiny", 
-       "shinydashboard", "glue", "R6", "tibble", "ggsci", "shinyjqui", "limma",
-       "edgeR", "factoextra")
-for(pkg in pkgs){
-    suppressPackageStartupMessages(library(pkg, character.only=TRUE))
-}
+# pkgs=c("dplyr", "reshape2", "HTSet", "ggplot2", "plotly", "DT", "shiny", 
+#        "shinydashboard", "glue", "R6", "tibble", "ggsci", "shinyjqui", "limma",
+#        "edgeR", "factoextra")
+# for(pkg in pkgs){
+#     suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+# }
+library(tidyverse)
+library(reshape2)
+library(ggplot2)
+library(limma)
+library(edgeR)
+library(HTSet)
+library(plotly)
+library(shiny)
+library(DT)
+library(shinydashboard)
+library(glue)
+library(R6)
+library(ggsci)
+library(shinyjqui)
+library(factoextra)
 
 # shiny module skeleton
 import::here(ShinyModule, .from="ShinyModule.R")

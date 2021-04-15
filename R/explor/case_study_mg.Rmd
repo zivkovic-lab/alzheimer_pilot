@@ -1,0 +1,1352 @@
+---
+title: "Case Study Brain Regions (Normalized to Grams of Tissues)"
+date: "`r strftime(Sys.time(), format = '%Y-%m-%d')`"
+output: 
+    html_document:
+        code_folding: show
+        toc: true
+        toc_float: true
+runtime: "shiny"
+---
+
+<style type="text/css">
+code {
+  font-family: monaco;
+}
+body p{
+    font-size: 12pt
+}
+body li {
+    font: 12pt
+}
+.datatables{
+    overflow: auto;
+    white-space: nowrap;
+}
+</style>
+
+<hr>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+options(repos = BiocManager::repositories())
+library(tidyverse)
+library(reshape2)
+library(HTSet)
+library(ggplot2)
+library(plotly)
+library(DT)
+library(limma)
+library(edgeR)
+library(shiny)
+```
+
+
+```{r}
+# loading data
+# abs_abund0_raw = readRDS("data/case_study2.rds")$abs_raw
+abs_abund0 <- readRDS("data/case_study2.rds")
+names(abs_abund0) <- c("raw", "mgs")
+grouping <- readRDS("data/grouping.rds")
+subtype <- grouping$subtype
+# set default ggplot theme
+theme_set(theme_bw())
+# set stringsAsFactors as FALSE by default
+options(stringsAsFactors = FALSE)
+```
+
+## 0. Input Data Type
+
+mgs data are the data normalized to the weight of tissue. Raw data are unnormalized data.
+
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("input_data", label = "Input Data", choices = c("mgs", "raw"))
+    )
+)
+```
+
+<hr>
+
+## 1. Data clarification
+
+The excel sheet received `CaseStudy_AD_20191116_R&A.xlsx` has three sheets named `MTC_AbsAbund`, `LPFc_AbsAbund`, and `LPbC_AbsAbund`, that each has the data for each of the three brain regions analyzed. It seems that different glycans were monitored in the three brain regions, so the rows of the three sheets do not match. The `LPFc_AbsAbund` sheet has 240 rows, the `MTC_AbsAbund` has 258 rows, and the `LPbC_AbsAbund` has 265 rows. I read all three sheets in, and merged them using the `Glycan` column. The merged dataset has 293 glycans (rows). The glycans not observed in a region but present in another region are set to zero.
+
+## 2. Zeros/missing values
+
+This dataset also contains some zeros/missing values.
+
+```{r}
+renderPlotly({
+  if(input$input_data == "raw"){
+    abs_abund0 <- abs_abund0$raw
+  } else {
+    abs_abund0 <- abs_abund0$mgs
+  }
+  (data.frame(
+    feature = featureNames(abs_abund0),
+    abs_abund = apply(abs_abund0$edata, 1, function(row){sum(row == 0)})
+  ) %>% 
+      ggplot() + 
+      geom_histogram(aes(x = abs_abund), color = "white", bins = 25, fill = "steelblue") +
+      labs(x = "number of zeros")) %>%
+    ggplotly
+})
+  
+
+```
+
+For each brain regions, we filtered glycans by reponse intensity: Glycans with > 0 intensity in 50% of samples and in at leat 3 samples from each group were used for further analysis.  
+Relative abundance were also calculated with the sum of selected glycans as the denominator in each brain region.
+
+```{r}
+min.obs.freq = 0.50
+filter_by_missing = function(mset, region, cutoff){
+    samples_con <- which(mset$pdata$region == region & mset$pdata$group == "Control")
+    mset_con = subset_samples(mset, sampleNames(mset)[samples_con])
+    mset_con = subset_features(mset_con, apply(mset_con$edata, 1, function(x) 
+        sum(x != 0) > 3
+    ))
+    samples_AD <- which(mset$pdata$region == region & mset$pdata$group == "AD")
+    mset_AD = subset_samples(mset, sampleNames(mset)[samples_AD])
+    mset_AD = subset_features(mset_AD, apply(mset_AD$edata, 1, function(x) 
+        sum(x != 0) > 3
+    ))
+    features <- intersect(featureNames(mset_con), featureNames(mset_AD))
+    samples = which(mset$pdata$region == region)
+    mset <- subset_samples(mset, sampleNames(mset)[samples])
+    mset <- subset_features(mset, apply(mset$edata, 1, function(x)
+      sum(x != 0) > cutoff * length(samples)
+    ))
+    mset <- subset_features(mset, featureNames(mset) %in% features)
+    mset
+}
+Abs_Abund <- list(mgs = NULL, raw = NULL)
+for(name in names(Abs_Abund)){
+  regions = unique(abs_abund0[[name]]$pdata$region) 
+  abs_abund = lapply(regions, function(region) filter_by_missing(abs_abund0[[name]], region, min.obs.freq))
+  names(abs_abund) = regions
+  Abs_Abund[[name]] <- abs_abund
+}
+Rel_Abund <- list(mgs = NULL, raw = NULL)
+for (name in names(Rel_Abund)) {
+  rel_abund = lapply(Abs_Abund[[name]], function(mset) 
+    transform_by_sample(mset, function(x) (x + 1)/sum(x+1)))
+  names(rel_abund) = names(abs_abund)
+  Rel_Abund[[name]] <- rel_abund
+}
+
+```
+
+```{r save filtered data to excel, eval=FALSE}
+library(xlsx)
+wb <- createWorkbook()
+for (region in names(Abs_Abund[["mgs"]])) {
+  sheet <- createSheet(wb, paste0(region, "_mgtissue_abs"))
+  addDataFrame(Abs_Abund[["mgs"]][[region]]$fdata, sheet = sheet, startColumn=1, row.names=T)
+  addDataFrame(Abs_Abund[["mgs"]][[region]]$edata, sheet = sheet, startColumn=1+ncol(Abs_Abund[["mgs"]][[region]]$fdata), row.names=F)
+}
+for (region in names(Rel_Abund[["mgs"]])) {
+  sheet <- createSheet(wb, paste0(region, "_mgtissue_rel"))
+  addDataFrame(Rel_Abund[["mgs"]][[region]]$fdata, sheet = sheet, startColumn=1, row.names=T)
+  addDataFrame(Rel_Abund[["mgs"]][[region]]$edata, sheet = sheet, startColumn=1+ncol(Rel_Abund[["mgs"]][[region]]$fdata), row.names=F)
+}
+saveWorkbook(wb, "AD_case_study_mgtissue_filtered.xlsx")
+```
+
+## 3. Normality
+
+As shown below in the histogram of the z score scaled median of each glycan, it skews to the left due to the zeros. The z score scaled median was used to pick a representative point from each glycan. These histograms helped to check if glycan data satisfied the linear model assumption (normal distribution).
+
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("data-type_hist", label = "Data Type", choices = c("abs_abund", "rel_abund"))
+    ),
+    tags$div(
+        class="col-sm-6",
+        selectInput("region_hist", label = "Brain Region", choices = c("LCBC", "MTC", "LPFC"))
+    )
+)
+```
+
+
+```{r}
+output$hist <- renderPlotly({
+  if (input$`data-type_hist` == "abs_abund") {
+    if (input$input_data == "mgs") {
+      mset <- Abs_Abund$mgs
+    } else {
+      mset <- Abs_Abund$raw
+    }
+  } else {
+    if(input$input_data == "mgs") {
+      mset <- Rel_Abund$mgs
+    }else{
+      mset <- Rel_Abund$raw
+    }
+  }
+  (data.frame(
+    glycan = featureNames(mset[[input$region_hist]]),
+    abs_abund = apply(mset[[input$region_hist]]$edata, 1, function(x) median(scale(x)))
+  ) %>% 
+    ggplot(aes(x = abs_abund, y = ..density..)) +
+    geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+    geom_density()+
+    labs(x = input$`data-type-hist`)) %>%
+    ggplotly
+})
+plotlyOutput("hist")
+```
+
+Again, taking a log transformation makes it look better for absolute abundance, but not for relative abundance.
+
+```{r}
+output$hist_log <- renderPlotly({
+  if (input$`data-type_hist` == "abs_abund") {
+    if (input$input_data == "mgs") {
+      mset <- Abs_Abund$mgs
+    } else {
+      mset <- Abs_Abund$raw
+    }
+  } else {
+    if(input$input_data == "mgs") {
+      mset <- Rel_Abund$mgs
+    }else{
+      mset <- Rel_Abund$raw
+    }
+  }
+  (data.frame(
+    glycan = featureNames(mset[[input$region_hist]]),
+    abs_abund = apply(mset[[input$region_hist]]$edata, 1, function(x) median(scale(log(x+1))))
+  ) %>% 
+    ggplot(aes(x = abs_abund, y = ..density..)) +
+    geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+    geom_density()+
+    labs(x = input$`data-type-hist`)) %>%
+    ggplotly
+})
+
+# (data.frame(
+#     glycan = featureNames(abs_abund0),
+#     abs_abund = apply(abs_abund0$conc_table, 1, function(x) median(scale(log(x + 1))))
+# ) %>% 
+#     ggplot(aes(x = abs_abund, y = ..density..)) +
+#     geom_histogram(color = "white", bins = 25, fill = "steelblue") +
+#     geom_density()) %>%
+#     ggplotly
+plotlyOutput("hist_log")
+```
+
+
+<hr>
+
+## 4. Princicple component analysis
+
+```{r, eval = FALSE, include = FALSE}
+pca1 = abs_abund %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+pca2 = rel_abund  %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+df = data.frame(pca1$x[,1:2], pca2$x[,1:2]) %>%
+    `colnames<-`(c(
+        paste0("abs_abund-", c("PC1", "PC2")),
+        paste0("rel_abund-", c("PC1", "PC2"))
+    )) %>%
+    mutate(
+        region = abs_abund$sample_table$region,
+        sample = sampleNames(abs_abund),
+        group = abs_abund$sample_table$group
+    ) %>%
+    melt(id.vars = c("sample", "region", "group")) %>%
+    separate(variable, into = c("data type", "PC"), sep = "-") %>%
+    dcast(sample + region + `data type` + group ~ PC)
+```
+
+```{r, out.width="100%", eval = FALSE, include = FALSE}
+(ggplot(df) +
+    geom_point(aes(x = PC1, y = PC2, color = group)) +
+    facet_wrap(~`data type`, scales = "free")) %>%
+    ggplotly
+```
+
+```{r, out.width="100%", eval = FALSE, include = FALSE}
+(ggplot(df) +
+    geom_point(aes(x = PC1, y = PC2, color = region)) +
+    facet_wrap(~`data type`, scales = "free")) %>%
+    ggplotly
+```
+
+```{r, eval = FALSE, include = FALSE, echo = FALSE}
+subset_pca = function(mset, region){
+    mset = subset_samples(mset, mset$sample_table$region == region)
+    mset = subset_features(mset, apply(mset$conc_table, 1, function(x) sum(x > 1) > 0))
+    pca = mset %>% conc_table %>% log %>%  apply(1, scale) %>% prcomp
+    p = pca$x[,1:2] %>% as.data.frame %>% 
+        mutate(group = mset$sample_table$group) %>%
+        ggplot(aes(PC1, PC2, color = group)) +
+        geom_point()
+    ggplotly(p)
+}
+subset_pca(rel_abund, "MTC")
+```
+
+## 5. Linear Model
+
+Fit the linear model for each brain region with log-transformed absolute abundance and relative abundance.
+
+```{r}
+fill_na = function(mset){
+    transform_by_feature(mset, function(x){
+        x[x == 0] = min(x[x != 0])/2
+        return(x)
+    })
+}
+lm = list(mgs = NULL, raw = NULL)
+# abs_abund
+for (name in names(lm)) {
+  regions = names(Abs_Abund[[name]])
+  lm[[name]]$abs_abund = lapply(regions, function(reg){
+    mset = fill_na(Abs_Abund[[name]][[reg]])
+    edata = log(mset$edata)
+    pdata = mset$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm[[name]]$abs_abund) = regions
+}
+
+# rel_abund
+for (name in names(lm)) {
+  regions = names(Rel_Abund[[name]])
+  lm[[name]]$rel_abund = lapply(regions, function(reg){
+    mset = rel_abund[[reg]]
+    edata = log(mset$edata)
+    pdata = mset$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm[[name]]$rel_abund) = regions
+}
+```
+
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("data-type", label = "Data Type", choices = names(lm$mgs))
+    ),
+    tags$div(
+        class="col-sm-6",
+        selectInput("region", label = "Brain Region", choices = c("LCBC", "MTC", "LPFC"))
+    )
+)
+```
+
+```{r, echo = FALSE}
+dataTableOutput("dt")
+output$dt = renderDataTable({
+  if(input$input_data == "mgs"){
+    if(input$`data-type` == "abs_abund"){
+      mset = Abs_Abund[["mgs"]][[input$region]]
+    } else {
+      mset = Rel_Abund[["mgs"]][[input$region]]
+    }
+  } else {
+    if(input$`data-type` == "abs_abund"){
+      mset = Abs_Abund[["mgs"]][[input$region]]
+    } else {
+      mset = Rel_Abund[["mgs"]][[input$region]]
+    }
+  }
+  tt = lm[[input$input_data]][[input$`data-type`]][[input$region]]
+  datatable(
+    cbind(mset$fdata, tt),
+    options = list(order = list(11, "asc")),
+    selection = list(mode = "single", selected = 1)
+  ) %>%
+    formatSignif(
+      columns = c("logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"),
+      digits = 4
+    ) 
+})
+```
+
+
+## 6. Visualization {.tabset}
+
+<div class="alert alert-info">Click on the tabs to see differet plots. The glycan in the boxplox is linked to the table above. Click on the row to see the effect.</div>
+
+### Volcano plot
+
+```{r echo = FALSE}
+renderPlotly({
+    lm[[input$input_data]][[input$`data-type`]][[input$region]] %>%
+    rownames_to_column("feature") %>%
+        ggplot() + 
+        geom_point(aes(x = logFC, y = -log(P.Value), feature = feature), color = "grey10", alpha = 0.6) +
+        geom_hline(yintercept = -log(0.05), color = "red", linetype = "dashed")
+})
+```
+
+### Histogram
+
+```{r echo = FALSE}
+renderPlotly({
+    lm[[input$input_data]][[input$`data-type`]][[input$region]] %>%
+        ggplot() +
+        geom_histogram(aes(x = P.Value), bins = 40, color = "white", fill = "grey25") +
+        geom_vline(xintercept = 0.05, color = "red", linetype = "dashed")
+})
+```
+
+### Box plot
+
+```{r echo = FALSE}
+renderPlotly({
+  if(input$input_data == "mgs"){
+    if(input$`data-type` == "abs_abund"){
+      mset = Abs_Abund[["mgs"]][[input$region]]
+    } else {
+      mset = Rel_Abund[["mgs"]][[input$region]]
+    }
+  } else {
+    if(input$`data-type` == "abs_abund"){
+      mset = Abs_Abund[["mgs"]][[input$region]]
+    } else {
+      mset = Rel_Abund[["mgs"]][[input$region]]
+    }
+  }
+  title = featureNames(mset)[input$dt_rows_selected]
+  data.frame(
+    value = mset$edata[input$dt_rows_selected,],
+    group = mset$pdata$group,
+    region = input$region
+  ) %>%
+    filter(region == input$region) %>%
+    ggplot(aes(group, value)) +
+    geom_boxplot(aes(fill = group)) +
+    geom_point(shape = 21, fill = "grey", color = "black", size = 2) +
+    labs(title = title, x = "", y = "")
+})
+```
+
+## 7. Grouping Analysis {.tabset}
+
+```{r, echo = FALSE}
+tags$div(
+    class = "row",
+    tags$div(
+        class="col-sm-6",
+        selectInput("data-type2", label = "Data Type", choices = names(lm$mgs))
+    ),
+    tags$div(
+        class="col-sm-6",
+        selectInput("region2", label = "Brain Region", choices = c("LCBC", "MTC", "LPFC"))
+    )
+)
+```
+
+
+### Subtypes
+
+```{r}
+lm_subtype = list(mgs = NULL, raw = NULL)
+# abs_abund
+for (name in names(lm_subtype)) {
+  regions = names(Abs_Abund[[name]])
+  lm_subtype[[name]]$abs_abund = lapply(regions, function(region){
+    fdata_subtype <- full_join(Abs_Abund[[name]][[region]]$fdata, subtype, by = "Class")
+    fdata_subtype <- fdata_subtype[complete.cases(fdata_subtype),] #remove NA rows
+    df_region_subtype <- as.data.frame(Abs_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_subtype[,6:8], by = "Glycan-Type") %>%
+      group_by(Subtypes) %>%
+      summarise_at(vars(-`Glycan-Type`, -Class), sum)
+    
+    edata = log(as.matrix(select(df_region_subtype, contains("_")))+1)
+    rownames(edata) <- df_region_subtype$Subtypes
+    pdata = Abs_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_subtype[[name]]$abs_abund) = regions
+}
+
+# rel_abund
+for (name in names(lm_subtype)) {
+  regions = names(Rel_Abund[[name]])
+  lm_subtype[[name]]$rel_abund = lapply(regions, function(region){
+    fdata_subtype <- full_join(Rel_Abund[[name]][[region]]$fdata, subtype, by = "Class")
+    fdata_subtype <- fdata_subtype[complete.cases(fdata_subtype),] #remove NA rows
+    df_region_subtype <- as.data.frame(Rel_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_subtype[,6:8], by = "Glycan-Type") %>%
+      group_by(Subtypes) %>%
+      summarise_at(vars(-`Glycan-Type`, -Class), sum)
+    edata = select(df_region_subtype, contains("_")) %>% as.matrix() %>% log()
+    rownames(edata) <- df_region_subtype$Subtypes
+    pdata = Rel_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_subtype[[name]]$rel_abund) = regions
+}
+```
+
+```{r, echo = FALSE}
+dataTableOutput("dt_subtype")
+output$dt_subtype = renderDataTable({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Abs_Abund[["raw"]][[input$region2]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Rel_Abund[["raw"]][[input$region2]]
+        }
+    }
+    tt = lm_subtype[[input$input_data]][[input$`data-type2`]][[input$region2]]
+    datatable(
+        tt,
+        selection = list(mode = "single", selected = 1)
+    ) %>%
+        formatSignif(
+            columns = c("logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"),
+            digits = 4
+        ) 
+})
+```
+
+
+```{r echo=FALSE}
+renderPlot({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]]
+        } else {
+          mset = Abs_Abund[["raw"]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]]
+        } else {
+          mset = Rel_Abund[["raw"]]
+        }
+    }
+  ## Adding grouping information
+  df_subtype <- data.frame()
+  for (region in names(mset)) {
+    pdata <- mset[[region]]$pdata %>%
+      rownames_to_column("Subject")
+    fdata_subtype <- full_join(mset[[region]]$fdata, subtype, by = "Class")
+    fdata_subtype <- fdata_subtype[complete.cases(fdata_subtype),] #remove NA rows
+    df_region_subtype <- as.data.frame(mset[[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_subtype[,6:8], by = "Glycan-Type") %>%
+      group_by(Subtypes) %>%
+      summarise_at(vars(-`Glycan-Type`, -Class), sum) %>%
+      pivot_longer(cols = !Subtypes, names_to = "Subject", values_to = "abund") %>%
+      left_join(pdata[,c(1:2, 4)], by = "Subject") 
+    df_subtype <- rbind(df_subtype, df_region_subtype)
+  }
+  
+  title <- paste0("Subtype Analysis")
+  ggplot(df_subtype, aes(x = Subtypes, y = abund)) +
+    geom_boxplot(aes(fill = group), alpha = 0.7) +
+    geom_point(aes(fill = group, group = group), 
+               position = position_dodge(width=0.75),
+               shape = 21, color = "black", size = 2) +
+    facet_wrap(~region, nrow = 3, scales = "free_y") +
+    labs(title = title, x = "", y = "") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) 
+})
+```
+
+### Structural
+
+```{r}
+lm_structural = list(mgs = NULL, raw = NULL)
+for (name in names(lm_structural)) {
+  regions = names(Abs_Abund[[name]])
+  # abs_abund
+  lm_structural[[name]]$abs_abund = lapply(regions, function(region){
+    fdata_structural <- mutate(Abs_Abund[[name]][[region]]$fdata, structural = ifelse(
+      HexNAc == 4, "Bi-antennary", ifelse(
+        HexNAc == 5, "Tri-antennary", ifelse(
+          HexNAc == 6, "Tetra-antennary", ifelse(
+            HexNAc == 7, "Bisecting GlcNAc", "Other"
+          )
+        )
+      )
+    )) %>%
+      mutate(structural = factor(structural, levels = c("Bi-antennary", "Tri-antennary", "Tetra-antennary", "Bisecting GlcNAc", "Other")))
+    df_region_structural <- as.data.frame(Abs_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_structural[,7:8], by = "Glycan-Type") %>%
+      group_by(structural) %>%
+      summarise_at(vars(-`Glycan-Type`), sum)
+    
+    edata = log(as.matrix(select(df_region_structural, contains("_")))+1)
+    rownames(edata) <- df_region_structural$structural
+    pdata = Abs_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_structural[[name]]$abs_abund) = regions
+  # rel_abund
+  lm_structural[[name]]$rel_abund = lapply(regions, function(region){
+    fdata_structural <- mutate(Rel_Abund[[name]][[region]]$fdata, structural = ifelse(
+      HexNAc == 4, "Bi-antennary", ifelse(
+        HexNAc == 5, "Tri-antennary", ifelse(
+          HexNAc == 6, "Tetra-antennary", ifelse(
+            HexNAc == 7, "Bisecting GlcNAc", "Other"
+          )
+        )
+      )
+    )) %>%
+      mutate(structural = factor(structural, levels = c("Bi-antennary", "Tri-antennary", "Tetra-antennary", "Bisecting GlcNAc", "Other")))
+    df_region_structural <- as.data.frame(Rel_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_structural[,7:8], by = "Glycan-Type") %>%
+      group_by(structural) %>%
+      summarise_at(vars(-`Glycan-Type`), sum)
+    edata = select(df_region_structural, contains("_")) %>% as.matrix() %>% log()
+    rownames(edata) <- df_region_structural$structural
+    pdata = Rel_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_structural[[name]]$rel_abund) = regions
+}
+
+```
+
+```{r, echo = FALSE}
+dataTableOutput("dt_structural")
+output$dt_structural = renderDataTable({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Abs_Abund[["raw"]][[input$region2]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Rel_Abund[["raw"]][[input$region2]]
+        }
+    }
+    tt = lm_structural[[input$input_data]][[input$`data-type2`]][[input$region2]]
+    datatable(
+        tt,
+        selection = list(mode = "single", selected = 1)
+    ) %>%
+        formatSignif(
+            columns = c("logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"),
+            digits = 4
+        ) 
+})
+```
+
+```{r, echo=FALSE}
+renderPlot({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]]
+        } else {
+          mset = Abs_Abund[["raw"]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]]
+        } else {
+          mset = Rel_Abund[["raw"]]
+        }
+    }
+  ## Adding grouping information
+  df_structural <- data.frame()
+  for (region in names(mset)) {
+    pdata <- mset[[region]]$pdata %>%
+    rownames_to_column("Subject")
+    fdata_structural <- mutate(mset[[region]]$fdata, structural = ifelse(
+      HexNAc == 4, "Bi-antennary", ifelse(
+        HexNAc == 5, "Tri-antennary", ifelse(
+          HexNAc == 6, "Tetra-antennary", ifelse(
+            HexNAc == 7, "Bisecting GlcNAc", "Other"
+          )
+        )
+      )
+    )) %>%
+      mutate(structural = factor(structural, levels = c("Bi-antennary", "Tri-antennary", "Tetra-antennary", "Bisecting GlcNAc", "Other")))
+    df_region_structural <- as.data.frame(mset[[region]]$edata) %>%
+    rownames_to_column("Glycan-Type") %>%
+    full_join(fdata_structural[,7:8], by = "Glycan-Type") %>%
+    group_by(structural) %>%
+    summarise_at(vars(-`Glycan-Type`), sum) %>%
+    pivot_longer(cols = !structural, names_to = "Subject", values_to = "abund") %>%
+    left_join(pdata[,c(1:2, 4)], by = "Subject")
+    df_structural <- rbind(df_structural, df_region_structural)
+  }
+  
+  ggplot(df_structural, aes(x = structural, y = abund)) +
+    geom_boxplot(aes(fill = group), alpha = 0.7) +
+    geom_point(aes(fill = group, group = group), 
+                position = position_dodge(width=0.75),
+               shape = 21, color = "black", size = 2) +
+    facet_wrap(~region, nrow = 3, scales = "free_y") +
+    labs(title = "Structural Analysis", x = "", y = "") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) 
+})
+```
+
+### Glycan Type
+
+```{r}
+lm_glycanType = list(mgs = NULL, raw = NULL)
+for (name in names(lm_glycanType)) {
+  # abs_abund
+  regions = names(Abs_Abund[[name]])
+  lm_glycanType[[name]]$abs_abund = lapply(regions, function(region){
+    pdata <- Abs_Abund[[name]][[region]]$pdata %>%
+      rownames_to_column("Subject")
+    fdata_glycanType <- mutate(Abs_Abund[[name]][[region]]$fdata, glycanType = ifelse(
+      Class %in% c("C", "C-F", "C-FS", "C-S"), "Complex", ifelse(
+        Class %in% c("CH", "CH-F", "CH-FS", "CH-S"), "Complex/Hybrid", ifelse(
+          Class %in% c("H", "H-F", "H-FS", "H-S"), "Hybrid", "Other"
+        )
+      )
+    )) %>%
+      mutate(glycanType = factor(glycanType, levels = c("Complex", "Complex/Hybrid", "Hybrid", "Other")))
+    df_region_glycanType <- as.data.frame(Abs_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_glycanType[,7:8], by = "Glycan-Type") %>%
+      group_by(glycanType) %>%
+      summarise_at(vars(-`Glycan-Type`), sum)
+    
+    edata = log(as.matrix(select(df_region_glycanType, contains("_")))+1)
+    rownames(edata) <- df_region_glycanType$glycanType
+    pdata = Abs_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_glycanType[[name]]$abs_abund) = regions
+  
+  # rel_abund
+  lm_glycanType[[name]]$rel_abund = lapply(regions, function(region){
+    pdata <- Rel_Abund[[name]][[region]]$pdata %>%
+      rownames_to_column("Subject")
+    fdata_glycanType <- mutate(Rel_Abund[[name]][[region]]$fdata, glycanType = ifelse(
+      Class %in% c("C", "C-F", "C-FS", "C-S"), "Complex", ifelse(
+        Class %in% c("CH", "CH-F", "CH-FS", "CH-S"), "Complex/Hybrid", ifelse(
+          Class %in% c("H", "H-F", "H-FS", "H-S"), "Hybrid", "Other"
+        )
+      )
+    )) %>%
+      mutate(glycanType = factor(glycanType, levels = c("Complex", "Complex/Hybrid", "Hybrid", "Other")))
+    df_region_glycanType <- as.data.frame(Rel_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_glycanType[,7:8], by = "Glycan-Type") %>%
+      group_by(glycanType) %>%
+      summarise_at(vars(-`Glycan-Type`), sum)
+    edata = select(df_region_glycanType, contains("_")) %>% as.matrix() %>% log()
+    rownames(edata) <- df_region_glycanType$glycanType
+    pdata = Rel_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_glycanType[[name]]$rel_abund) = regions
+}
+```
+
+```{r, echo = FALSE}
+dataTableOutput("dt_glycanType")
+output$dt_glycanType = renderDataTable({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Abs_Abund[["raw"]][[input$region2]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Rel_Abund[["raw"]][[input$region2]]
+        }
+    }
+    tt = lm_glycanType[[input$input_data]][[input$`data-type2`]][[input$region2]]
+    datatable(
+        tt,
+        selection = list(mode = "single", selected = 1)
+    ) %>%
+        formatSignif(
+            columns = c("logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"),
+            digits = 4
+        ) 
+})
+```
+
+```{r, echo=FALSE}
+renderPlot({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]]
+        } else {
+          mset = Abs_Abund[["raw"]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]]
+        } else {
+          mset = Rel_Abund[["raw"]]
+        }
+    }
+  ## Adding grouping information
+  df_glycanType <- data.frame()
+  for (region in names(mset)) {
+    pdata <- mset[[region]]$pdata %>%
+    rownames_to_column("Subject")
+    fdata_glycanType <- mutate(mset[[region]]$fdata, glycanType = ifelse(
+      Class %in% c("C", "C-F", "C-FS", "C-S"), "Complex", ifelse(
+        Class %in% c("CH", "CH-F", "CH-FS", "CH-S"), "Complex/Hybrid", ifelse(
+          Class %in% c("H", "H-F", "H-FS", "H-S"), "Hybrid", "Other"
+        )
+      )
+    )) %>%
+      mutate(glycanType = factor(glycanType, levels = c("Complex", "Complex/Hybrid", "Hybrid", "Other")))
+    df_region_glycanType <- as.data.frame(mset[[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_glycanType[,7:8], by = "Glycan-Type") %>%
+      group_by(glycanType) %>%
+      summarise_at(vars(-`Glycan-Type`), sum) %>%
+      pivot_longer(cols = !glycanType, names_to = "Subject", values_to = "abund") %>%
+      left_join(pdata[,c(1:2, 4)], by = "Subject")
+    df_glycanType <- rbind(df_glycanType, df_region_glycanType)
+  }
+  
+  ggplot(df_glycanType, aes(x = glycanType, y = abund)) +
+    geom_boxplot(aes(fill = group), alpha = 0.7) +
+    geom_point(aes(fill = group, group = group), 
+                position = position_dodge(width=0.75),
+               shape = 21, color = "black", size = 2) +
+    facet_wrap(~region, nrow = 3, scales = "free_y") +
+    labs(title = "Glycan Type Analysis", x = "", y = "") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) 
+})
+```
+
+### Fucosylated Glycans
+
+Glycans that didn't fit the grouping criteria (Fuc=0) were exluded from the linear model. 
+
+```{r}
+lm_fucosylated = list(mgs = NULL, raw = NULL)
+for (name in names(lm_fucosylated)) {
+  # abs_abund
+  regions = names(Abs_Abund[[name]])
+  lm_fucosylated[[name]]$abs_abund = lapply(regions, function(region){
+    fdata_fucosylated <- Abs_Abund[[name]][[region]]$fdata %>%
+      mutate(
+        only = ifelse(
+          NeuAc == 0, factor(Fuc, levels = 1:7), "Other"
+        )
+      ) %>%
+      mutate(only = factor(
+        only, levels = c("Other", 1:7),
+        labels = c("Other", "mono_fuc only", "di_fuc only", "tri_fuc only",
+                   "tetra_fuc only", "penta_fuc only", "hexa_fuc only", 
+                   "hepta_fuc only")
+      )) %>%
+      mutate(
+        sialofuc = ifelse(
+          NeuAc >= 1, factor(Fuc, levels = 1:7), "Other"
+        )
+      ) %>%
+      mutate(sialofuc = factor(
+        sialofuc, levels = c("Other", 1:7),
+        labels = c("Other", "mono_fuc sialofuc", "di_fuc sialofuc", "tri_fuc sialofuc",
+                   "tetra_fuc sialofuc", "penta_fuc sialofuc", "hexa_fuc sialofuc", 
+                   "hepta_fuc sialofuc")
+      )) %>%
+      mutate(
+        total = factor(
+          Fuc, levels = 1:7, 
+          labels = c("mono_fuc total", "di_fuc total", "tri_fuc total",
+                     "tetra_fuc total", "penta_fuc total", "hexa_fuc total", 
+                     "hepta_fuc total")
+        )
+      ) %>%
+      pivot_longer(cols = c("only", "sialofuc", "total"), 
+                   names_to = "superclass", 
+                   values_to = "fucosylated") 
+    df_region_fucosylated <- as.data.frame(Abs_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_fucosylated[,c(7, 9)], by = "Glycan-Type") %>%
+      group_by(fucosylated) %>%
+      summarise_at(vars(-`Glycan-Type`), sum) %>%
+      filter(complete.cases(.)) %>%
+      filter(fucosylated != "Other")
+    
+    edata = log(as.matrix(select(df_region_fucosylated, contains("_")))+1)
+    rownames(edata) <- df_region_fucosylated$fucosylated
+    pdata = Abs_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_fucosylated[[name]]$abs_abund) = regions
+  
+# rel_abund
+lm_fucosylated[[name]]$rel_abund = lapply(regions, function(region){
+  fdata_fucosylated <- Rel_Abund[[name]][[region]]$fdata %>%
+    mutate(
+      only = ifelse(
+        NeuAc == 0, factor(Fuc, levels = 1:7), "Other"
+      )
+    ) %>%
+    mutate(only = factor(
+      only, levels = c("Other", 1:7),
+      labels = c("Other", "mono_fuc only", "di_fuc only", "tri_fuc only",
+                 "tetra_fuc only", "penta_fuc only", "hexa_fuc only", 
+                 "hepta_fuc only")
+    )) %>%
+    mutate(
+      sialofuc = ifelse(
+        NeuAc >= 1, factor(Fuc, levels = 1:7), "Other"
+      )
+    ) %>%
+    mutate(sialofuc = factor(
+      sialofuc, levels = c("Other", 1:7),
+      labels = c("Other", "mono_fuc sialofuc", "di_fuc sialofuc", "tri_fuc sialofuc",
+                 "tetra_fuc sialofuc", "penta_fuc sialofuc", "hexa_fuc sialofuc", 
+                 "hepta_fuc sialofuc")
+    )) %>%
+    mutate(
+      total = factor(
+        Fuc, levels = 1:7, 
+        labels = c("mono_fuc total", "di_fuc total", "tri_fuc total",
+                   "tetra_fuc total", "penta_fuc total", "hexa_fuc total", 
+                   "hepta_fuc total")
+      )
+    ) %>%
+    pivot_longer(cols = c("only", "sialofuc", "total"), 
+                 names_to = "superclass", 
+                 values_to = "fucosylated") 
+  df_region_fucosylated <- as.data.frame(Rel_Abund[[name]][[region]]$edata) %>%
+    rownames_to_column("Glycan-Type") %>%
+    full_join(fdata_fucosylated[,c(7, 9)], by = "Glycan-Type") %>%
+    group_by(fucosylated) %>%
+    summarise_at(vars(-`Glycan-Type`), sum) %>%
+    filter(complete.cases(.)) %>%
+    filter(fucosylated != "Other")
+  
+  edata = select(df_region_fucosylated, contains("_")) %>% as.matrix() %>% log()
+  rownames(edata) <- df_region_fucosylated$fucosylated
+  pdata = Rel_Abund[[name]][[region]]$pdata
+  pdata$group = factor(pdata$group)
+  pdata$group = relevel(pdata$group, "Control")
+  design = model.matrix(~group, data = pdata)
+  fit = lmFit(edata, design)
+  fit = eBayes(fit)
+  topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+})
+names(lm_fucosylated[[name]]$rel_abund) = regions
+}
+```
+
+```{r, echo = FALSE}
+dataTableOutput("dt_fucosylated")
+output$dt_fucosylated = renderDataTable({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Abs_Abund[["raw"]][[input$region2]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Rel_Abund[["raw"]][[input$region2]]
+        }
+    }
+    tt = lm_fucosylated[[input$input_data]][[input$`data-type2`]][[input$region2]]
+    datatable(
+        tt,
+        selection = list(mode = "single", selected = 1)
+    ) %>%
+        formatSignif(
+            columns = c("logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"),
+            digits = 4
+        ) 
+})
+```
+
+
+```{r, echo=FALSE}
+renderPlot({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]]
+        } else {
+          mset = Abs_Abund[["raw"]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]]
+        } else {
+          mset = Rel_Abund[["raw"]]
+        }
+    }
+  ## Adding grouping information
+  df_fucosylated <- data.frame()
+  for (region in names(mset)) {
+    pdata <- mset[[region]]$pdata %>%
+      rownames_to_column("Subject")
+    fdata_fucosylated <- mset[[region]]$fdata %>%
+      mutate(
+        only = ifelse(
+          NeuAc == 0, factor(Fuc, levels = 1:7), "Other"
+        )
+      ) %>%
+      mutate(only = factor(
+        only, levels = c("Other", 1:7),
+        labels = c("Other", "mono_fuc only", "di_fuc only", "tri_fuc only",
+                   "tetra_fuc only", "penta_fuc only", "hexa_fuc only", 
+                   "hepta_fuc only")
+      )) %>%
+      mutate(
+        sialofuc = ifelse(
+          NeuAc >= 1, factor(Fuc, levels = 1:7), "Other"
+        )
+      ) %>%
+      mutate(sialofuc = factor(
+        sialofuc, levels = c("Other", 1:7),
+        labels = c("Other", "mono_fuc sialofuc", "di_fuc sialofuc", "tri_fuc sialofuc",
+                   "tetra_fuc sialofuc", "penta_fuc sialofuc", "hexa_fuc sialofuc", 
+                   "hepta_fuc sialofuc")
+      )) %>%
+      mutate(
+        total = factor(
+          Fuc, levels = 1:7, 
+          labels = c("mono_fuc total", "di_fuc total", "tri_fuc total",
+                     "tetra_fuc total", "penta_fuc total", "hexa_fuc total", 
+                     "hepta_fuc total")
+        )
+      ) %>%
+      pivot_longer(cols = c("only", "sialofuc", "total"), 
+                   names_to = "superclass", 
+                   values_to = "fucosylated") %>%
+      filter(complete.cases(.)) %>%
+      filter(fucosylated != "Other") %>%
+      separate(fucosylated, into = c("subclass", "superclass"), sep = " ")
+    df_region_fucosylated <- as.data.frame(mset[[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_fucosylated[,7:9], by = "Glycan-Type") %>%
+      group_by(subclass, superclass) %>%
+      summarise_at(vars(-`Glycan-Type`), sum) %>%
+      pivot_longer(cols = !c(subclass, superclass), names_to = "Subject", values_to = "abund") %>%
+      left_join(pdata[,c(1:2, 4)], by = "Subject")
+    df_fucosylated <- rbind(df_fucosylated, df_region_fucosylated)
+  }
+  df_fucosylated <- df_fucosylated[complete.cases(df_fucosylated),] %>%
+    mutate(
+      subclass = factor(
+        subclass, levels = c("mono_fuc", "di_fuc", "tri_fuc",
+                     "tetra_fuc", "penta_fuc", "hexa_fuc", 
+                     "hepta_fuc")
+      )
+    )
+  ggplot(df_fucosylated, aes(x = subclass, y = abund)) +
+    geom_boxplot(aes(fill = group), alpha = 0.7) +
+    geom_point(aes(fill = group, group = group), 
+                position = position_dodge(width=0.75),
+               shape = 21, color = "black", alpha = 0.5) +
+    facet_grid(cols = vars(region), rows = vars(superclass), scales = "free_y", as.table = FALSE) +
+    labs(title = "Fucosylated Analysis", x = "", y = "") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) 
+})
+```
+
+### Sialylated Glycans
+
+Glycans that didn't fit the grouping criteria (NeuAc=0) were exluded from the linear model. 
+
+```{r}
+lm_sialylated = list(mgs = NULL, raw = NULL)
+for (name in names(lm_sialylated)) {
+  # abs_abund
+  regions = names(Abs_Abund[[name]])
+  lm_sialylated[[name]]$abs_abund = lapply(regions, function(region){
+    fdata_sialylated <- Abs_Abund[[name]][[region]]$fdata %>%
+      mutate(
+        only = ifelse(
+          Fuc == 0, factor(NeuAc, levels = 1:6), "Other"
+        )
+      ) %>%
+      mutate(only = factor(
+        only, levels = c("Other", 1:6),
+        labels = c("Other", "mono_sia only", "di_sia only", "tri_sia only",
+                   "tetra_sia only", "penta_sia only", "hexa_sia only")
+      )) %>%
+      mutate(
+        sialofuc = ifelse(
+          Fuc >= 1, factor(NeuAc, levels = 1:6), "Other"
+        )
+      ) %>%
+      mutate(sialofuc = factor(
+        sialofuc, levels = c("Other", 1:6),
+        labels = c("Other", "mono_sia sialofuc", "di_sia sialofuc", "tri_sia sialofuc",
+                   "tetra_sia sialofuc", "penta_sia sialofuc", "hexa_sia sialofuc")
+      )) %>%
+      mutate(
+        total = factor(
+          NeuAc, levels = 1:6, 
+          labels = c("mono_sia total", "di_sia total", "tri_sia total",
+                     "tetra_sia total", "penta_sia total", "hexa_sia total")
+        )
+      ) %>%
+      pivot_longer(cols = c("only", "sialofuc", "total"), 
+                   names_to = "superclass", 
+                   values_to = "sialylated") 
+    df_region_sialylated <- as.data.frame(Abs_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_sialylated[,c(7, 9)], by = "Glycan-Type") %>%
+      group_by(sialylated) %>%
+      summarise_at(vars(-`Glycan-Type`), sum) %>%
+      filter(complete.cases(.)) %>%
+      filter(sialylated != "Other")
+    
+    edata = log(as.matrix(select(df_region_sialylated, contains("_")))+1)
+    rownames(edata) <- df_region_sialylated$sialylated
+    pdata = Abs_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_sialylated[[name]]$abs_abund) = regions
+  
+  # rel_abund
+  lm_sialylated[[name]]$rel_abund = lapply(regions, function(region){
+    fdata_sialylated <- Rel_Abund[[name]][[region]]$fdata %>%
+      mutate(
+        only = ifelse(
+          Fuc == 0, factor(NeuAc, levels = 1:6), "Other"
+        )
+      ) %>%
+      mutate(only = factor(
+        only, levels = c("Other", 1:6),
+        labels = c("Other", "mono_sia only", "di_sia only", "tri_sia only",
+                   "tetra_sia only", "penta_sia only", "hexa_sia only")
+      )) %>%
+      mutate(
+        sialofuc = ifelse(
+          Fuc >= 1, factor(NeuAc, levels = 1:7), "Other"
+        )
+      ) %>%
+      mutate(sialofuc = factor(
+        sialofuc, levels = c("Other", 1:6),
+        labels = c("Other", "mono_sia sialofuc", "di_sia sialofuc", "tri_sia sialofuc",
+                   "tetra_sia sialofuc", "penta_sia sialofuc", "hexa_sia sialofuc")
+      )) %>%
+      mutate(
+        total = factor(
+          NeuAc, levels = 1:6, 
+          labels = c("mono_sia total", "di_sia total", "tri_sia total",
+                     "tetra_sia total", "penta_sia total", "hexa_sia total")
+        )
+      ) %>%
+      pivot_longer(cols = c("only", "sialofuc", "total"), 
+                   names_to = "superclass", 
+                   values_to = "sialylated") 
+    df_region_sialylated <- as.data.frame(Rel_Abund[[name]][[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_sialylated[,c(7, 9)], by = "Glycan-Type") %>%
+      group_by(sialylated) %>%
+      summarise_at(vars(-`Glycan-Type`), sum) %>%
+      filter(complete.cases(.)) %>%
+      filter(sialylated != "Other")
+    
+    edata = select(df_region_sialylated, contains("_")) %>% as.matrix() %>% log()
+    rownames(edata) <- df_region_sialylated$sialylated
+    pdata = Rel_Abund[[name]][[region]]$pdata
+    pdata$group = factor(pdata$group)
+    pdata$group = relevel(pdata$group, "Control")
+    design = model.matrix(~group, data = pdata)
+    fit = lmFit(edata, design)
+    fit = eBayes(fit)
+    topTable(fit, coef = "groupAD", number = Inf, sort.by = "none")
+  })
+  names(lm_sialylated[[name]]$rel_abund) = regions
+}
+```
+
+```{r, echo = FALSE}
+dataTableOutput("dt_sialylated")
+output$dt_sialylated = renderDataTable({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Abs_Abund[["raw"]][[input$region2]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]][[input$region2]]
+        } else {
+          mset = Rel_Abund[["raw"]][[input$region2]]
+        }
+    }
+    tt = lm_sialylated[[input$input_data]][[input$`data-type2`]][[input$region2]]
+    datatable(
+        tt,
+        selection = list(mode = "single", selected = 1)
+    ) %>%
+        formatSignif(
+            columns = c("logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"),
+            digits = 4
+        ) 
+})
+```
+
+```{r, echo=FALSE}
+renderPlot({
+    if(input$`data-type2` == "abs_abund"){
+        if (input$input_data == "mgs") {
+          mset = Abs_Abund[["mgs"]]
+        } else {
+          mset = Abs_Abund[["raw"]]
+        }
+    } else {
+        if (input$input_data == "mgs") {
+          mset = Rel_Abund[["mgs"]]
+        } else {
+          mset = Rel_Abund[["raw"]]
+        }
+    }
+  ## Adding grouping information
+  df_sialylated <- data.frame()
+  for (region in names(mset)) {
+    pdata <- mset[[region]]$pdata %>%
+      rownames_to_column("Subject")
+    fdata_sialylated <- mset[[region]]$fdata %>%
+      mutate(
+        only = ifelse(
+          Fuc == 0, factor(NeuAc, levels = 1:6), "Other"
+        )
+      ) %>%
+      mutate(only = factor(
+        only, levels = c("Other", 1:6),
+        labels = c("Other", "mono_sia only", "di_sia only", "tri_sia only",
+                   "tetra_sia only", "penta_sia only", "hexa_sia only")
+      )) %>%
+      mutate(
+        sialofuc = ifelse(
+          Fuc >= 1, factor(NeuAc, levels = 1:6), "Other"
+        )
+      ) %>%
+      mutate(sialofuc = factor(
+        sialofuc, levels = c("Other", 1:6),
+        labels = c("Other", "mono_sia sialofuc", "di_sia sialofuc", "tri_sia sialofuc",
+                   "tetra_sia sialofuc", "penta_sia sialofuc", "hexa_sia sialofuc")
+      )) %>%
+      mutate(
+        total = factor(
+          NeuAc, levels = 1:6, 
+          labels = c("mono_sia total", "di_sia total", "tri_sia total",
+                     "tetra_sia total", "penta_sia total", "hexa_sia total")
+        )
+      ) %>%
+      pivot_longer(cols = c("only", "sialofuc", "total"), 
+                   names_to = "superclass", 
+                   values_to = "sialylated") %>%
+      filter(complete.cases(.)) %>%
+      filter(sialylated != "Other") %>%
+      separate(sialylated, into = c("subclass", "superclass"), sep = " ")
+    df_region_sialylated <- as.data.frame(mset[[region]]$edata) %>%
+      rownames_to_column("Glycan-Type") %>%
+      full_join(fdata_sialylated[,7:9], by = "Glycan-Type") %>%
+      group_by(subclass, superclass) %>%
+      summarise_at(vars(-`Glycan-Type`), sum) %>%
+      pivot_longer(cols = !c(subclass, superclass), names_to = "Subject", values_to = "abund") %>%
+      left_join(pdata[,c(1:2, 4)], by = "Subject")
+    df_sialylated <- rbind(df_sialylated, df_region_sialylated)
+  }
+  df_sialylated <- df_sialylated[complete.cases(df_sialylated),] %>%
+    mutate(
+      subclass = factor(
+        subclass, levels = c("mono_sia", "di_sia", "tri_sia",
+                     "tetra_sia", "penta_sia", "hexa_sia")
+      )
+    )
+  ggplot(df_sialylated, aes(x = subclass, y = abund)) +
+    geom_boxplot(aes(fill = group), alpha = 0.7) +
+    geom_point(aes(fill = group, group = group), 
+                position = position_dodge(width=0.75),
+               shape = 21, color = "black", alpha = 0.5) +
+    facet_grid(cols = vars(region), rows = vars(superclass), scales = "free", as.table = FALSE) +
+    labs(title = "Sialylated Analysis", x = "", y = "") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) 
+})
+```
+
+## 7. Conclusion
+
+There doesn't seem to be a majore separation between either patient groups or brain regions according to the PCA plot. However, the linear regression result showed that, the relative abundance of 190 glycans in MTC were significantly different in patient groups, most of them are higher in the AD patiens. 
+
+## 8. Session Information
+
+```{r}
+sessionInfo()
+```

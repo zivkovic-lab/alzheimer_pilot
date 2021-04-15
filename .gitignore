@@ -1,5 +1,8 @@
 .Rhistory
 index.Rmd
 .Rproj.user
-data-raw
+raw-data
 man
+R/explor/rsconnect/
+apps/11-brain-regions/rsconnect/
+apps/plasma-glc/rsconnect/

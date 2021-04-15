@@ -33,20 +33,22 @@ knitr::opts_chunk$set(echo = TRUE, out.width = "100%")
 ```
 
 
-```{r}
-pkgs=c(
-    "dplyr", "reshape2", "tibble", "ggplot2", "tidyr", "limma", "edgeR", 
-    "Metabase", "plotly", "shiny", "DT"
-)
-for(pkg in pkgs){
-    suppressPackageStartupMessages(library(pkg, character.only=TRUE))
-}
+```{r, message=FALSE}
+library(tidyverse)
+library(reshape2)
+library(ggplot2)
+library(limma)
+library(edgeR)
+library(Metabase)
+library(plotly)
+library(shiny)
+library(DT)
 ```
 
 
 ```{r}
 # loading data
-load("../../data/brain.rda")
+load("data/brain.rda")
 # set default ggplot theme
 theme_set(theme_bw())
 ```
