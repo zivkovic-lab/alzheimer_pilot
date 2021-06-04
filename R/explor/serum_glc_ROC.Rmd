@@ -1,0 +1,290 @@
+---
+title: "R Notebook"
+output: 
+    html_document:
+        code_folding: show
+        toc: true
+        toc_float: true
+---
+
+```{r, include=FALSE}
+options(repos = BiocManager::repositories())
+library(tidyverse)
+library(ggplot2)
+library(HTSet)
+library(lubridate)
+library(limma)
+library(glmnet)
+library(randomForest)
+library(MASS)
+# library(caret)
+library(performance)
+# require(see)
+library(ROCR)
+library(pROC)
+```
+
+
+```{r, loading data}
+data0 <- readRDS("data/serum.rds")
+# set default ggplot theme
+theme_set(theme_bw())
+# set stringsAsFactors as FALSE by default
+options(stringsAsFactors = FALSE)
+```
+
+```{r DE_function, include=FALSE}
+calcDE_var <- function(datatype = "glycopeptide", formula = "~Dx_Group", coef = 3, transform = "log", cv="1"){
+  data[[datatype]]$fdata$cv[is.na(data[[datatype]]$fdata$cv)] <- 1
+  dataf <- subset_features(data[[datatype]], data[[datatype]]$fdata$cv<=as.numeric(cv))
+  model <- model.matrix(as.formula(formula), data = dataf$pdata)
+  edata <- dataf$edata[,rownames(model)]
+  if(transform == "log"){
+    edata <- log(edata)
+  } 
+  lmFit(edata, model) %>%
+    eBayes() %>%
+    topTable(coef = coef, number = Inf, sort.by = "none")
+}
+```
+
+# Preparing Data
+
+```{r include=FALSE}
+sampleTree_pep <- hclust(dist(t(log(data0$peptide$edata))), method = "average")
+plot(sampleTree_pep, main = "Peptide Sample clustering to detect outliers", sub="", 
+     xlab="", cex = 0.5)
+abline(h = 4, col = "red")
+peptide <- subset_samples(data0$peptide, !(rownames(data0$peptide$pdata) %in% c("A9", "B10")))
+```
+
+```{r}
+sampleTree_glyco <- hclust(dist(t(log(data0$glycopeptide$edata))), method = "average")
+plot(sampleTree_glyco, main = "Glycopeptide Sample clustering to detect outliers", sub="", 
+     xlab="", cex = 0.5)
+abline(h = 15.5, col = "red")
+glycopeptide <- subset_samples(data0$glycopeptide, !(rownames(data0$glycopeptide$pdata) %in% c("B10", "C13", "A67")))
+
+sampleTree_pepi <- hclust(dist(t(log(data0$peptide_intensity$edata))), method = "average")
+plot(sampleTree_pepi, main = "Peptide Intensity Sample clustering to detect outliers", sub="", 
+     xlab="", cex = 0.5)
+abline(h = 8, col = "red")
+peptide_intensity <- subset_samples(data0$peptide_intensity, !(rownames(data0$peptide_intensity$pdata) %in% c("A9", "C13")))
+```
+
+```{r}
+data <- list(peptide = peptide, glycopeptide = glycopeptide, peptide_intensity = peptide_intensity)
+for (type in names(data)) {
+  data[[type]]$pdata <- data[[type]]$pdata %>%
+    mutate(Draw_dt = Blood_Draw_Dt) %>%
+    mutate(
+      years = round(time_length(interval(Draw_dt, as.POSIXct("2020-11-11",format="%Y-%m-%d")), "years")),
+      days = round(as.POSIXct("2020-11-11",format="%Y-%m-%d")-Draw_dt)
+    )
+}
+replace <- which(data$glycopeptide$pdata$adc_ethnicity == "American Indian/Alaskan Native") 
+data$glycopeptide$pdata$adc_ethnicity2 <- data$glycopeptide$pdata$adc_ethnicity
+data$glycopeptide$pdata$adc_ethnicity2[replace] <- NA
+data$glycopeptide$pdata$adc_ethnicity2 <- droplevels(data$glycopeptide$pdata$adc_ethnicity2)
+```
+
+```{r}
+set.seed(527)
+glycopeptide <- data$glycopeptide %>%
+    subset_samples(complete.cases(data$glycopeptide$pdata[,c("age", "adc_gender", "adc_ethnicity2", "apoe4", "bmi")]))
+train_num <- sample(1:nsamples(glycopeptide),nsamples(glycopeptide)*0.7)
+features <- calcDE_var("glycopeptide", "~SuperDx+age+adc_gender+adc_ethnicity2+apoe4+bmi", coef = 2) %>%
+  filter(P.Value<0.05) %>%
+  rownames()
+# For baseline model
+base <- glycopeptide$pdata[,c("SuperDx", "age", "adc_gender", "adc_ethnicity2", "apoe4", "bmi")] %>%
+    mutate(SuperDx=ifelse(SuperDx=="Normal", 0, 1))
+trainset_base <- base[train_num,]
+testset_base <- base[-train_num,]
+
+# For glycopeptide model
+glyco <- cbind(as.data.frame(t(glycopeptide$edata)[,features]), base)
+trainset_glyco <- glyco[train_num,]
+testset_glyco <- glyco[-train_num,]
+
+# For interaction model
+features2 <- calcDE_var("glycopeptide", "~SuperDx*adc_gender+age+adc_ethnicity2+apoe4+bmi", coef = 9) %>%
+  filter(P.Value<0.05) %>%
+  rownames()
+glyco2 <- cbind(as.data.frame(t(glycopeptide$edata)[,features2]), base)
+trainset_glyco2 <- glyco2[train_num,]
+testset_glyco2 <- glyco2[-train_num,]
+```
+
+
+# Baseline Model
+
+```{r}
+full_logmod <- glm(SuperDx~., data = trainset_base,family = binomial())
+full_logmod
+summary(full_logmod)
+check_cov <- check_collinearity(full_logmod)
+check_cov
+plot(check_cov)
+# Predict the model on the test dataset
+pred_logmod <- predict(full_logmod, testset_base[,colnames(testset_base)!="SuperDx"],type = "response") # transform the numeric predictive values into categorical values (use 0.5 as a threshold)
+pred <- ifelse(pred_logmod>0.5, 1, 0)
+# confusion matrix
+logmod.conf <- table(pred,testset_base[,"SuperDx"])
+logmod.conf
+# classification accuracy
+logmod.accuracy = ((logmod.conf[1,1]+logmod.conf[2,2])/sum(logmod.conf))
+logmod.accuracy
+# AUC plot
+perf_log1 <- prediction(pred_logmod, testset_base[,"SuperDx"]) %>%
+    ROCR::performance("tpr","fpr")
+plot(perf_log1,col="#F8766D",main="ROC for Classification with Logistic Regression")
+roc1 <- roc(testset_base[,"SuperDx"], pred_logmod)
+# ci.auc(roc)
+# plot(roc)
+auc1 <- auc(testset_base[,"SuperDx"], pred_logmod)
+auc1
+ci.auc(auc1)
+
+```
+
+
+# Glycopeptide Model
+
+```{r}
+# Full model
+full_logmod <- glm(SuperDx~., data = trainset_glyco,family = binomial())
+full_logmod
+summary(full_logmod)
+check_cov <- check_collinearity(full_logmod)
+check_cov
+plot(check_cov)
+# Predict the model on the test dataset
+pred_logmod <- predict(full_logmod, testset_glyco[,colnames(testset_glyco)!="SuperDx"],type = "response") # transform the numeric predictive values into categorical values (use 0.5 as a threshold)
+pred <- ifelse(pred_logmod>0.5, 1, 0)
+# confusion matrix
+logmod.conf <- table(pred,testset_glyco[,"SuperDx"])
+logmod.conf
+# classification accuracy
+logmod.accuracy = ((logmod.conf[1,1]+logmod.conf[2,2])/sum(logmod.conf))
+logmod.accuracy
+# AUC plot
+perf_log2 <- prediction(pred_logmod, testset_glyco[,"SuperDx"]) %>%
+    ROCR::performance("tpr","fpr")
+plot(perf_log2,col="#F8766D",main="ROC for Classification with Logistic Regression")
+roc2 <- roc(testset_glyco[,"SuperDx"], pred_logmod)
+(auc2 <- auc(testset_glyco[,"SuperDx"], pred_logmod))
+ci.auc(auc2)
+
+# training
+best_logmod <- stepAIC(full_logmod,trace = 0) 
+best_logmod
+summary(best_logmod)
+check_cov <- check_collinearity(best_logmod)
+check_cov
+plot(check_cov)
+# Predict the model on the test dataset
+pred_logmod <- predict(best_logmod, testset_glyco[,colnames(testset_glyco)!="SuperDx"],type = "response") # transform the numeric predictive values into categorical values (use 0.5 as a threshold)
+pred <- ifelse(pred_logmod>0.5, 1, 0)
+# confusion matrix
+logmod.conf <- table(pred,testset_glyco[,"SuperDx"])
+logmod.conf
+# classification accuracy
+logmod.accuracy = ((logmod.conf[1,1]+logmod.conf[2,2])/sum(logmod.conf))
+logmod.accuracy
+# ROC plot
+perf_log3 <- prediction(pred_logmod, testset_glyco[,"SuperDx"]) %>%
+    ROCR::performance("tpr","fpr")
+plot(perf_log3,col="#F8766D",main="ROC for Classification with Logistic Regression")
+roc3 <- roc(testset_glyco[,"SuperDx"], pred_logmod)
+(auc3 <- auc(testset_glyco[,"SuperDx"], pred_logmod))
+ci.auc(auc3)
+
+
+# baseline model vs glycopeptide full model
+roc.test(roc1, roc2, alternative = "less")
+# baseline model vs glycopeptide trained model
+roc.test(roc1, roc3, alternative = "less")
+roc.test(roc3, roc2, alternative = "less")
+
+data.frame(Dx=factor(testset_glyco[,"SuperDx"], labels = c("Normal", "AD")), score=pred_logmod) %>%
+    ggplot(aes(x=score, fill=Dx)) +
+    geom_histogram(binwidth = 0.01)
+
+```
+
+
+
+
+```{r eval=FALSE, include=FALSE}
+library(rpart)
+library(rpart.plot)
+# fit classification decision tree
+tree_base <- rpart(SuperDx ~ ., data = trainset_base, method = "class")
+# display results
+rpart.plot(tree_base)
+# predict the patients in the testing set
+predict(tree_base, testset_base[,colnames(testset_base)!="SuperDx"])
+# confusion matrix
+(treeT <- table(predict(tree_base, testset_base[,colnames(testset_base)!="SuperDx"], type = "class"),testset_base[,"SuperDx"]))
+#Classification accuracy
+(treeT[1,1]+treeT[2,2])/(sum(treeT))
+printcp(tree_base)
+plotcp(tree_base)
+table(Heart[trainHeart,"AHD"])
+AHDfit$cptable[which.min(AHDfit$cptable[,"xerror"]),"CP"]
+?printcp
+# Root Node Error x Rel Error x n = misclasssification error on training
+table(predict(AHDfit, Heart[trainHeart,], type = "class"),Heart$AHD[trainHeart])
+0.42453*0.25556*212
+# Root Node Error x x-Error x n = CV error 
+```
+
+
+# Visulization
+
+## ROC curve
+
+```{r}
+plot(perf_log1,col="red",main="ROC for Classification with Logistic Regression")
+plot(perf_log2,col="steelblue",add=TRUE)
+plot(perf_log3,col="orange",add=TRUE)
+legend(0.6, 0.3, legend = c("baseline", "glycopeptide_full", "glycopeptide_trimmed"), col = c("red", "steelblue", "orange"), lty=1)
+data.frame(
+  model = c("baseline", "glycopeptide_full", "glycopeptide_trimmed"),
+  auc = c(auc1, auc2, auc3),
+  auc_CI = c(str_c(format(as.numeric(ci.auc(auc1))[c(1,3)], digits = 4), collapse = "-"), str_c(format(as.numeric(ci.auc(auc2))[c(1,3)], digits = 4), collapse = "-"), str_c(format(as.numeric(ci.auc(auc3))[c(1,3)], digits = 4), collapse = "-"))
+)
+```
+
+## AUC comparison
+```{r}
+# bar plot of AUC
+data.frame(
+    model = c("baseline", "glyco_full", "glyco_trimmed"),
+    auc = c(roc1$auc, roc2$auc, roc3$auc),
+    se = c(sqrt(var(roc1)), sqrt(var(roc2)), sqrt(var(roc3)))
+) %>%
+    mutate(lower = auc-se,
+           upper = auc+se
+           ) %>%
+    ggplot(aes(x = model, y = auc))+
+    geom_col(width = 0.4) + 
+    geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.1)+
+    theme_bw()
+
+
+# baseline model vs glycopeptide full model
+roc.test(roc1, roc2, alternative = "less")
+# baseline model vs glycopeptide trained model
+roc.test(roc1, roc3, alternative = "less")
+roc.test(roc3, roc2, alternative = "less")
+```
+## Score Distribution
+
+```{r}
+data.frame(Dx=factor(testset_glyco[,"SuperDx"], labels = c("Normal", "AD")), score=pred_logmod) %>%
+    ggplot(aes(x=score, fill=Dx)) +
+    geom_histogram(binwidth = 0.01)
+```
+

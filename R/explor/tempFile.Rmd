@@ -135,6 +135,19 @@ calcDE_var <- function(datatype = "glycopeptide", formula = "~Dx_Group", coef = 
     eBayes() %>%
     topTable(coef = coef, number = Inf, sort.by = "none")
 }
+calcDE_var2 <- function(datatype = "glycopeptide", formula = "~Dx_Group", coef = 3, transform = "log", cv="1"){
+  data[[datatype]]$fdata$cv[is.na(data[[datatype]]$fdata$cv)] <- 1
+  dataf <- subset_features(data[[datatype]], data[[datatype]]$fdata$cv<=as.numeric(cv))
+  model <- model.matrix(as.formula(formula), data = dataf$pdata)
+  edata <- dataf$edata[,rownames(model)]
+  if(transform == "log"){
+    edata <- log(edata)
+  } 
+  lmFit(edata, model) %>%
+    eBayes() %>%
+    topTable(coef = coef, number = Inf, sort.by = "none")
+}
+
 ```
 
 In this study, 99 serum samples are from normal participants without the AD diagnosis, and 96 are from AD patients. The primary outcome consists of three parts:  

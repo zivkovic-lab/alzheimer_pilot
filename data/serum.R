@@ -10,7 +10,11 @@ for(pkg in pkgs){
 # data path
 file = "../raw-data/20201111_VennAIPBNet.peak-areas-only.abundance-all batches_F2.xlsx"
 
-
+# CV
+ss <- read_excel(file, sheet = 7)
+cv <- ss %>%
+    column_to_rownames("Sample Name") %>%
+    apply(1, function(x)sd(x)/mean(x))
 # -------------------------------------------------------------------------
 # pdata
 # -------------------------------------------------------------------------
@@ -67,6 +71,9 @@ group <- read_excel(file, sheet = 5) %>%
 rowsinfdata <- match(group$`Sample code`, rownames(fdata_glycan))
 fdata_glycan$subtype <- "NG"
 fdata_glycan$subtype[rowsinfdata] <- group$`Glycan Subtype`
+identical(rownames(fdata_glycan), names(cv))
+fdata_glycan$cv <- NA
+fdata_glycan$cv[match(names(cv), rownames(fdata_glycan))] <- cv
 glycopeptide <- HTSet(edata = edata_glycan, fdata = fdata_glycan, pdata = pdata)
 
 ## Peptides (intensity)
