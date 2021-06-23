@@ -92,7 +92,7 @@ data$glycopeptide$pdata$adc_ethnicity2 <- droplevels(data$glycopeptide$pdata$adc
 set.seed(527)
 glycopeptide <- data$glycopeptide %>%
     subset_samples(complete.cases(data$glycopeptide$pdata[,c("age", "adc_gender", "adc_ethnicity2", "apoe4", "bmi")]))
-train_num <- sample(1:nsamples(glycopeptide),nsamples(glycopeptide)*0.7)
+train_num <- sample(1:nsamples(glycopeptide),nsamples(glycopeptide)*0.65)
 features <- calcDE_var("glycopeptide", "~SuperDx+age+adc_gender+adc_ethnicity2+apoe4+bmi", coef = 2) %>%
   filter(P.Value<0.05) %>%
   rownames()
@@ -103,17 +103,16 @@ trainset_base <- base[train_num,]
 testset_base <- base[-train_num,]
 
 # For glycopeptide model
-glyco <- cbind(as.data.frame(t(glycopeptide$edata)[,features]), base)
+glyco <- as.data.frame(t(glycopeptide$edata)[,features]) %>%
+  cbind(SuperDx = base$SuperDx)
 trainset_glyco <- glyco[train_num,]
 testset_glyco <- glyco[-train_num,]
 
-# For interaction model
-features2 <- calcDE_var("glycopeptide", "~SuperDx*adc_gender+age+adc_ethnicity2+apoe4+bmi", coef = 9) %>%
-  filter(P.Value<0.05) %>%
-  rownames()
-glyco2 <- cbind(as.data.frame(t(glycopeptide$edata)[,features2]), base)
-trainset_glyco2 <- glyco2[train_num,]
-testset_glyco2 <- glyco2[-train_num,]
+# For combined model
+comb <- cbind(glyco, base[, -1])
+trainset_comb <- comb[train_num,]
+testset_comb <- comb[-train_num,]
+
 ```
 
 
@@ -151,7 +150,7 @@ ci.auc(auc1)
 
 # Glycopeptide Model
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 # Full model
 full_logmod <- glm(SuperDx~., data = trainset_glyco,family = binomial())
 full_logmod
@@ -214,32 +213,54 @@ data.frame(Dx=factor(testset_glyco[,"SuperDx"], labels = c("Normal", "AD")), sco
 ```
 
 
+Use Ridge:
+```{r}
+x <- model.matrix(SuperDx~., trainset_glyco)[,-1] # remove the intercept
+y <- trainset_glyco$SuperDx 
+# check collinearity
 
+# Ridge
+# grid <- 10^seq(10, -2, length = 100)
+ridge_mod <- glmnet(x, y, alpha = 0, family = "binomial")
+dim(coef(ridge_mod))
+plot(ridge_mod)    # Draw plot of coefficients
 
-```{r eval=FALSE, include=FALSE}
-library(rpart)
-library(rpart.plot)
-# fit classification decision tree
-tree_base <- rpart(SuperDx ~ ., data = trainset_base, method = "class")
-# display results
-rpart.plot(tree_base)
-# predict the patients in the testing set
-predict(tree_base, testset_base[,colnames(testset_base)!="SuperDx"])
-# confusion matrix
-(treeT <- table(predict(tree_base, testset_base[,colnames(testset_base)!="SuperDx"], type = "class"),testset_base[,"SuperDx"]))
-#Classification accuracy
-(treeT[1,1]+treeT[2,2])/(sum(treeT))
-printcp(tree_base)
-plotcp(tree_base)
-table(Heart[trainHeart,"AHD"])
-AHDfit$cptable[which.min(AHDfit$cptable[,"xerror"]),"CP"]
-?printcp
-# Root Node Error x Rel Error x n = misclasssification error on training
-table(predict(AHDfit, Heart[trainHeart,], type = "class"),Heart$AHD[trainHeart])
-0.42453*0.25556*212
-# Root Node Error x x-Error x n = CV error 
 ```
 
+Cross validation with the `cv.glmnet()` function.
+```{r}
+set.seed(1)
+cv.out <- cv.glmnet(as.matrix(trainset_glyco[,1:24]), trainset_glyco[,25], alpha = 0, family = "binomial", type.measure = "auc") # Fit binomial regression model on training data
+bestlam <- cv.out$lambda.min  # Select lambda that maximizes training AUC
+bestlam
+plot(cv.out)
+```
+use the best $\lambda$ selected by cv.
+```{r}
+out <- glmnet(as.matrix(trainset_glyco[,1:24]), trainset_glyco[,25], alpha = 0, family = "binomial") # Fit ridge regression model on full dataset
+predict(out, type = "coefficients", s = bestlam) # Display coefficients using lambda chosen by CV
+```
+
+Make prediction and calculate AUC.
+```{r}
+# Predict the model on the test dataset
+pred_logmod <- predict(out, as.matrix(testset_glyco[,1:24]),s = bestlam, family = "binomial", type = "response") 
+# transform the numeric predictive values into categorical values (use 0.5 as a threshold)
+pred <- ifelse(pred_logmod>0.5, 1, 0)
+# confusion matrix
+logmod.conf <- table(pred,testset_glyco[,"SuperDx"])
+logmod.conf
+# classification accuracy
+logmod.accuracy = ((logmod.conf[1,1]+logmod.conf[2,2])/sum(logmod.conf))
+logmod.accuracy
+# ROC plot
+perf_log3 <- prediction(pred_logmod, testset_glyco[,"SuperDx"]) %>%
+    ROCR::performance("tpr","fpr")
+plot(perf_log3,col="#F8766D",main="ROC for Classification with Logistic Regression")
+roc3 <- roc(testset_glyco[,"SuperDx"], as.numeric(pred_logmod))
+(auc3 <- auc(testset_glyco[,"SuperDx"], as.numeric(pred_logmod)))
+ci.auc(auc3)
+```
 
 # Visulization
 
@@ -247,13 +268,13 @@ table(predict(AHDfit, Heart[trainHeart,], type = "class"),Heart$AHD[trainHeart])
 
 ```{r}
 plot(perf_log1,col="red",main="ROC for Classification with Logistic Regression")
-plot(perf_log2,col="steelblue",add=TRUE)
+# plot(perf_log2,col="steelblue",add=TRUE)
 plot(perf_log3,col="orange",add=TRUE)
-legend(0.6, 0.3, legend = c("baseline", "glycopeptide_full", "glycopeptide_trimmed"), col = c("red", "steelblue", "orange"), lty=1)
+legend(0.6, 0.3, legend = c("baseline", "glycopeptide"), col = c("red", "orange"), lty=1)
 data.frame(
-  model = c("baseline", "glycopeptide_full", "glycopeptide_trimmed"),
-  auc = c(auc1, auc2, auc3),
-  auc_CI = c(str_c(format(as.numeric(ci.auc(auc1))[c(1,3)], digits = 4), collapse = "-"), str_c(format(as.numeric(ci.auc(auc2))[c(1,3)], digits = 4), collapse = "-"), str_c(format(as.numeric(ci.auc(auc3))[c(1,3)], digits = 4), collapse = "-"))
+  model = c("baseline", "glycopeptide"),
+  auc = c(auc1, auc3),
+  auc_CI = c(str_c(format(as.numeric(ci.auc(auc1))[c(1,3)], digits = 4), collapse = "-"),  str_c(format(as.numeric(ci.auc(auc3))[c(1,3)], digits = 4), collapse = "-"))
 )
 ```
 
@@ -261,9 +282,9 @@ data.frame(
 ```{r}
 # bar plot of AUC
 data.frame(
-    model = c("baseline", "glyco_full", "glyco_trimmed"),
-    auc = c(roc1$auc, roc2$auc, roc3$auc),
-    se = c(sqrt(var(roc1)), sqrt(var(roc2)), sqrt(var(roc3)))
+    model = c("baseline", "glyco"),
+    auc = c(roc1$auc, roc3$auc),
+    se = c(sqrt(var(roc1)), sqrt(var(roc3)))
 ) %>%
     mutate(lower = auc-se,
            upper = auc+se
@@ -275,16 +296,70 @@ data.frame(
 
 
 # baseline model vs glycopeptide full model
-roc.test(roc1, roc2, alternative = "less")
+# roc.test(roc1, roc2, alternative = "less")
 # baseline model vs glycopeptide trained model
 roc.test(roc1, roc3, alternative = "less")
-roc.test(roc3, roc2, alternative = "less")
+# roc.test(roc3, roc2, alternative = "less")
 ```
 ## Score Distribution
 
 ```{r}
-data.frame(Dx=factor(testset_glyco[,"SuperDx"], labels = c("Normal", "AD")), score=pred_logmod) %>%
+data.frame(Dx=factor(testset_glyco[,"SuperDx"], labels = c("Normal", "AD")), 
+           score = as.numeric(pred_logmod)) %>%
     ggplot(aes(x=score, fill=Dx)) +
-    geom_histogram(binwidth = 0.01)
+    geom_density(alpha=0.5)
+```
+
+# PCA Analysis  
+```{r}
+glycopeptide
+# rows are genes, cols are samples
+# use prcomp() to do PCA on the data
+# prcomp() expects the samples to be rows and the genes to be columns
+pca <- prcomp(t(glycopeptide$edata), scale = TRUE)
+
+plot(pca$x[,1], pca$x[,2])
+# sdev stands for "standard deviation"
+# sdev^2 calculates how much variation in the original data each principle component accounts for.
+pca.var <- pca$sdev^2
+pca.var.per <- round(pca.var/sum(pca.var)*100,1)
+barplot.default(pca.var.per, main="Scree Plot", xlab="Principal Component", ylab="Percent Variation")
+
+# plot with ggplot2
+pca.data <- data.frame(
+  Sample = glycopeptide$pdata$adc_gender,
+  X = pca$x[,1],
+  Y = pca$x[,2]
+)
+ggplot(pca.data, aes(X, Y, color = Sample))+
+  geom_point()+
+  theme_bw()
+```
+
+Use the factoextra R package
+```{r}
+library(factoextra)
+# pca is calculated above
+
+# Scree plot
+fviz_eig(pca)
+```
+
+Plot individuals.
+```{r}
+fviz_pca_ind(pca,
+             col.ind = glycopeptide$pdata$SuperDx, # Color by the quality of representation
+             repel = TRUE     # Avoid text overlapping
+             )
+```
+
+Graph of variables.
+```{r}
+fviz_pca_var(pca,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,     # Avoid text overlapping
+             select.var = list(contrib = 7)
+             )
 ```
 
